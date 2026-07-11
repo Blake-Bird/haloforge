@@ -1,0 +1,21 @@
+services:
+  haloforge:
+    build:
+      context: .
+      args:
+        AXICLASS_REF: 1b0a585f86a3dce6babd66e486535368b2799ec7
+    ports:
+      - "7860:7860"
+    environment:
+      HALOFORGE_DATA_DIR: /app/data
+      HALOFORGE_CLASS_TIMEOUT_SECONDS: 1800
+    volumes:
+      - ./data:/app/data
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+          cpus: "2.0"
