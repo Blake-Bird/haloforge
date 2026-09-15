@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible problem in the local application, scientific pipeline, export, or documentation.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve HaloForge. Do not attach private research runs, credentials, personal data, or solver binaries. For a potential security issue, use the private security-report link instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Interface or accessibility
+        - Storage, import, or export
+        - Numerical calculation or scientific validity
+        - AxiCLASS/CLASS environment
+        - Teaching material
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened?
+      description: State the observed behavior and why it is unexpected.
+      placeholder: A concise, non-sensitive description.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest non-sensitive sequence of steps and settings needed to reproduce the issue.
+      placeholder: |
+        1. Start the local app.
+        2. Select …
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include application revision, operating system, Python/Docker version, and whether AxiCLASS was available. Remove paths, usernames, tokens, and private data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed private research data, credentials, and personally identifying information.
+          required: true
+        - label: I understand that an HMF curve or a successful run is not by itself an external validation claim.
+          required: true

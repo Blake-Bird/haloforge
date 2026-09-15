@@ -1,2 +1,1 @@
 """HaloForge configuration package."""
-

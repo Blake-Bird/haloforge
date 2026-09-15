@@ -32,7 +32,9 @@ def top_hat_W_exact(y: np.ndarray | float) -> np.ndarray:
 def top_hat_W(y: np.ndarray | float) -> np.ndarray:
     """Taylor-safe real-space top-hat window."""
     y_arr = np.asarray(y, dtype=float)
-    return np.where(np.abs(y_arr) < 0.1, top_hat_W_series(y_arr), top_hat_W_exact(y_arr))
+    return np.where(
+        np.abs(y_arr) < 0.1, top_hat_W_series(y_arr), top_hat_W_exact(y_arr)
+    )
 
 
 def gaussian_W(y: np.ndarray | float) -> np.ndarray:
@@ -61,4 +63,3 @@ def window_squared(y: np.ndarray | float, window_type: str) -> np.ndarray:
 
 
 W_top_hat = top_hat_W
-

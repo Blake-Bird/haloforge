@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use HaloForge, please cite the software and the scientific sources named in its exported provenance."
+title: "HaloForge"
+type: software
+authors:
+  - family-names: Bird
+    given-names: Blake
+repository-code: "https://github.com/Blake-Bird/haloforge"
+abstract: "An interactive AxiCLASS-based laboratory for inspecting linear matter power, mass variance, and halo-mass-function assumptions."
+keywords:
+  - cosmology
+  - halo mass function
+  - AxiCLASS
+  - scientific education

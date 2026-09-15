@@ -1,13 +1,20 @@
 import numpy as np
 import pytest
 
-from engine.fitting_functions import FITTING_NAMES, fitting_values, f_press_schechter, f_sheth_tormen
+from engine.fitting_functions import (
+    FITTING_NAMES,
+    fitting_values,
+    f_press_schechter,
+    f_sheth_tormen,
+)
 
 
 def test_all_published_fits_are_positive_and_finite():
     sigma = np.logspace(-0.7, 0.5, 64)
     for name in FITTING_NAMES:
-        values = fitting_values(sigma, 1.686, name, z=0.5, omega_m_z=0.59, delta_halo=200.0)
+        values = fitting_values(
+            sigma, 1.686, name, z=0.5, omega_m_z=0.59, delta_halo=200.0
+        )
         assert values.shape == sigma.shape
         assert np.all(np.isfinite(values)), name
         assert np.all(values >= 0.0), name
@@ -17,7 +24,7 @@ def test_all_published_fits_are_positive_and_finite():
 def test_press_schechter_matches_closed_form():
     sigma = np.array([0.5, 1.0, 2.0])
     nu = 1.686 / sigma
-    expected = np.sqrt(2 / np.pi) * nu * np.exp(-nu**2 / 2)
+    expected = np.sqrt(2 / np.pi) * nu * np.exp(-(nu**2) / 2)
     np.testing.assert_allclose(f_press_schechter(sigma), expected, rtol=1e-13)
 
 

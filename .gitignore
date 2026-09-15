@@ -1,0 +1,24 @@
+# Personal experiments must never enter the source distribution.
+/data/
+/output/
+/tmp/
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.DS_Store
+*.log
+*.tmp
+test-results/
+playwright-report/

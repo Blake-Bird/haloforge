@@ -14,20 +14,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m pip install --no-cache-dir "pip<25" "setuptools<75" wheel "Cython==0.29.36" "numpy==1.26.4"
 
 ARG AXICLASS_REF=1b0a585f86a3dce6babd66e486535368b2799ec7
+# AxiCLASS's pyproject imports Cython during metadata generation without
+# declaring it as an isolated build dependency. Build the C library first,
+# then install the already-pinned local binding with isolation disabled.
 RUN git init /opt/AxiCLASS \
     && cd /opt/AxiCLASS \
     && git remote add origin https://github.com/PoulinV/AxiCLASS.git \
     && git fetch --depth 1 origin "${AXICLASS_REF}" \
     && git checkout --detach FETCH_HEAD \
     && git rev-parse HEAD > /opt/AXICLASS_COMMIT \
-    && make PYTHON=python3 -j2
+    && make class libclass.a -j2 \
+    && python -m pip install --no-build-isolation .
 
 WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
-COPY . .
-RUN mkdir -p data/cache data/saved_runs data/exports \
+COPY app.py ./
+COPY assets ./assets
+COPY config ./config
+COPY content ./content
+COPY engine ./engine
+COPY state ./state
+RUN groupadd --gid 10001 haloforge \
+    && useradd --uid 10001 --gid haloforge --create-home haloforge \
+    && mkdir -p /var/lib/haloforge/cache /var/lib/haloforge/saved_runs /var/lib/haloforge/exports \
+    && chown -R haloforge:haloforge /var/lib/haloforge \
     && python -c "import classy; print('AxiCLASS binding:', classy.__file__)"
+
+USER haloforge
 
 EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=8s --start-period=45s --retries=3 \

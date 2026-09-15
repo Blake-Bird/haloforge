@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/Blake-Bird/haloforge/security/advisories/new
+    about: Please report potential vulnerabilities privately; do not include secrets or personal research data in a public issue.

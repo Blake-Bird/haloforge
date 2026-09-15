@@ -25,6 +25,7 @@ DEFAULT_PARAMS = {
     "quad_limit": 200,
     "window_type": "Top-hat",
     "fitting": "Sheth-Tormen 2001",
+    "mass_definition": "analytic_top_hat",
     "delta_halo": 200.0,
     "delta_c": 1.686,
     "mass_min_exp": 8,

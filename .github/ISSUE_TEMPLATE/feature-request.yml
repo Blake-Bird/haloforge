@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a scoped improvement with its scientific, teaching, or workflow rationale.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Describe the user need, not only a proposed interface.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Explain the smallest useful behavior and its limits.
+    validations:
+      required: true
+  - type: dropdown
+    id: evidence
+    attributes:
+      label: Evidence standard affected
+      options:
+        - Interface or teaching workflow only
+        - Numerical method or validation
+        - Empirical calibration or model domain
+        - Privacy, storage, or sharing
+        - Documentation or developer experience
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References, assumptions, or constraints
+      description: Include relevant papers, calibration domains, accessibility needs, or operational constraints. Do not include private data.

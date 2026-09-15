@@ -10,6 +10,7 @@ import numpy as np
 import streamlit as st
 
 from config.defaults import DEFAULT_PARAMS
+from engine.contracts import validate_fit_configuration
 from engine.class_runner import ClassRuntimeError, compute_matter_power
 from engine.sigma import compute_sigma_result
 from state.cache import cache_key, load_cached_power, save_cached_power
@@ -74,6 +75,9 @@ def _hydrate_run(run: dict) -> None:
         "P_by_z": arrays.get("P_by_z", np.asarray([arrays.get("P")])),
         "redshifts": arrays.get("redshifts", np.asarray([0.0])),
         "growth_class": arrays.get("growth_class", np.asarray([1.0])),
+        "background_omega_m_by_z": arrays.get(
+            "background_omega_m_by_z", np.asarray([])
+        ),
         "derived": {
             "h": run.get("derived", {}).get("h", float(params["H0"]) / 100.0),
             "Omega_m": params.get("Omega_m"),
@@ -82,6 +86,7 @@ def _hydrate_run(run: dict) -> None:
         "class_status": run.get("class_status", "UNKNOWN"),
         "warning": run.get("storage_warning", ""),
         "class_error": run.get("class_error", ""),
+        "background_warning": run.get("background_warning", ""),
         "class_settings": run.get("class_settings", {}),
         "from_cache": False,
         "loaded_from_run": run["run_id"],
@@ -95,11 +100,14 @@ def _hydrate_run(run: dict) -> None:
         "redshifts": arrays.get("redshifts", np.asarray([0.0])),
         "sigma8_pipeline_by_z": arrays.get("sigma8_pipeline_by_z", np.asarray([])),
         "dlnsigma_dlnM": arrays.get("dlnsigma_dlnM"),
-        "dlnsigma_dlnM_by_z": arrays.get("dlnsigma_dlnM_by_z", np.asarray([arrays.get("dlnsigma_dlnM")])),
+        "dlnsigma_dlnM_by_z": arrays.get(
+            "dlnsigma_dlnM_by_z", np.asarray([arrays.get("dlnsigma_dlnM")])
+        ),
         "rho0": run.get("rho0"),
         "window_type": run.get("window_type", params.get("window_type", "Top-hat")),
         "delta_c": float(params.get("delta_c", 1.686)),
         "integration_method": "log-k Simpson",
+        "numerical_diagnostics": run.get("numerical_diagnostics", {}),
     }
     st.session_state["params"] = deepcopy(params)
     st.session_state["completed_params"] = deepcopy(params)
@@ -150,14 +158,10 @@ def get_active_params() -> dict:
 
 def reset_params() -> None:
     init_session()
-    st.session_state["params"] = deepcopy(
-        DEFAULT_PARAMS
-    )
+    st.session_state["params"] = deepcopy(DEFAULT_PARAMS)
     st.session_state["run_name_draft"] = ""
 
-    save_draft_params(
-        st.session_state["params"]
-    )
+    save_draft_params(st.session_state["params"])
 
 
 def clear_loaded_run() -> None:
@@ -177,37 +181,98 @@ def clear_loaded_run() -> None:
 
 def validate_params(params: dict) -> list[str]:
     errors: list[str] = []
-    if float(params["Omega_b"]) >= float(params["Omega_m"]):
-        errors.append("Omega_b must be smaller than Omega_m so Omega_cdm remains positive.")
-    if float(params["k_min"]) <= 0 or float(params["k_max"]) <= float(params["k_min"]):
+
+    def numeric(key: str) -> float | None:
+        try:
+            value = float(params[key])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{key} must be a finite numeric value.")
+            return None
+        if not np.isfinite(value):
+            errors.append(f"{key} must be a finite numeric value.")
+            return None
+        return value
+
+    delta_halo = numeric("delta_halo")
+    omega_b, omega_m = numeric("Omega_b"), numeric("Omega_m")
+    k_min, k_max = numeric("k_min"), numeric("k_max")
+    mass_min, mass_max, selected_mass = (
+        numeric("mass_min_exp"),
+        numeric("mass_max_exp"),
+        numeric("selected_mass_exp"),
+    )
+    f_ede = numeric("f_EDE") if params.get("enable_ede") else None
+    if params.get("fitting") == "Tinker 2008" and (
+        delta_halo is None or not 200 <= delta_halo <= 3200
+    ):
+        errors.append(
+            "Tinker 2008 requires halo overdensity between 200 and 3200 relative to mean matter density."
+        )
+    try:
+        validate_fit_configuration(
+            params.get("fitting"),
+            params.get("mass_definition", "analytic_top_hat"),
+            delta_halo if delta_halo is not None else float("nan"),
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+    if omega_b is not None and omega_m is not None and omega_b >= omega_m:
+        errors.append(
+            "Omega_b must be smaller than Omega_m so Omega_cdm remains positive."
+        )
+    if k_min is not None and k_max is not None and (k_min <= 0 or k_max <= k_min):
         errors.append("The k range must satisfy 0 < k_min < k_max.")
-    if int(params["k_points"]) < 50:
+    k_points = numeric("k_points")
+    if k_points is not None and (not k_points.is_integer() or k_points < 50):
         errors.append("At least 50 k samples are required.")
-    if float(params["mass_min_exp"]) >= float(params["mass_max_exp"]):
+    if mass_min is not None and mass_max is not None and mass_min >= mass_max:
         errors.append("The minimum halo mass must be below the maximum halo mass.")
-    if int(params["mass_points"]) < 20:
+    mass_points = numeric("mass_points")
+    if mass_points is not None and (not mass_points.is_integer() or mass_points < 20):
         errors.append("At least 20 mass samples are required.")
-    if float(params["selected_mass_exp"]) < float(params["mass_min_exp"]) or float(params["selected_mass_exp"]) > float(params["mass_max_exp"]):
-        errors.append("The inspection mass must lie inside the selected halo-mass range.")
-    if any(float(z) < 0 for z in params.get("z_values", [])):
+    if (
+        selected_mass is not None
+        and mass_min is not None
+        and mass_max is not None
+        and (selected_mass < mass_min or selected_mass > mass_max)
+    ):
+        errors.append(
+            "The inspection mass must lie inside the selected halo-mass range."
+        )
+    try:
+        negative_redshift = any(
+            not np.isfinite(float(z)) or float(z) < 0
+            for z in params.get("z_values", [])
+        )
+    except (TypeError, ValueError):
+        negative_redshift = True
+    if negative_redshift:
         errors.append("Redshifts must be non-negative.")
-    if params.get("enable_ede") and not (0.0 <= float(params.get("f_EDE", 0.0)) <= 0.3):
+    if params.get("enable_ede") and (f_ede is None or not 0.0 <= f_ede <= 0.3):
         errors.append("f_EDE must lie between 0 and 0.3.")
     return errors
 
 
 def _comparison_payload(params: dict) -> str:
     ignored = {"mode"}
-    return json.dumps({key: params[key] for key in sorted(params) if key not in ignored}, sort_keys=True, default=str)
+    return json.dumps(
+        {key: params[key] for key in sorted(params) if key not in ignored},
+        sort_keys=True,
+        default=str,
+    )
 
 
 def slow_parameters_changed() -> bool:
     init_session()
     completed = st.session_state.get("completed_params")
-    return completed is not None and _comparison_payload(get_params()) != _comparison_payload(completed)
+    return completed is not None and _comparison_payload(
+        get_params()
+    ) != _comparison_payload(completed)
 
 
-def run_new_cosmology(requested_name: str = "", notes: str = "") -> dict:
+def run_new_cosmology(
+    requested_name: str = "", notes: str = "", notebook: dict | None = None
+) -> dict:
     """Compute P(k,z) and sigma(M,z) transactionally, then atomically auto-save."""
     init_session()
     params = deepcopy(get_params())
@@ -217,7 +282,9 @@ def run_new_cosmology(requested_name: str = "", notes: str = "") -> dict:
     save_draft_params(params)
 
     if not _COMPUTE_LOCK.acquire(blocking=False):
-        raise ClassRuntimeError("Another AxiCLASS solve is already running. Let it finish before starting a second run.")
+        raise ClassRuntimeError(
+            "Another AxiCLASS solve is already running. Let it finish before starting a second run."
+        )
     try:
         cached = load_cached_power(params)
         if cached is not None:
@@ -229,7 +296,12 @@ def run_new_cosmology(requested_name: str = "", notes: str = "") -> dict:
             save_cached_power(params, power_result)
 
         sigma_result = compute_sigma_result(power_result, params)
-        current = {"params": deepcopy(params), "power_result": power_result, "sigma_result": sigma_result, "hash": cache_key(params)}
+        current = {
+            "params": deepcopy(params),
+            "power_result": power_result,
+            "sigma_result": sigma_result,
+            "hash": cache_key(params),
+        }
         runs = load_all_runs()
         base_name = requested_name.strip() or auto_run_name(params, len(runs) + 1)
         name = unique_run_name(base_name, runs)
@@ -239,6 +311,7 @@ def run_new_cosmology(requested_name: str = "", notes: str = "") -> dict:
             notes=notes.strip() or "Auto-saved after a completed AxiCLASS run.",
             color_index=next_color_index(),
             is_baseline=not any(existing.get("is_baseline") for existing in runs),
+            notebook=notebook,
         )
         run["hash"] = cache_key(params)
         save_run(run)
@@ -254,7 +327,11 @@ def run_new_cosmology(requested_name: str = "", notes: str = "") -> dict:
         st.session_state["last_auto_saved_run"] = _run_reference(run)
         st.session_state["run_name_draft"] = ""
         refresh_saved_runs()
-        power_result["saved_run"] = {"run_id": run["run_id"], "name": run["name"], "is_baseline": run.get("is_baseline", False)}
+        power_result["saved_run"] = {
+            "run_id": run["run_id"],
+            "name": run["name"],
+            "is_baseline": run.get("is_baseline", False),
+        }
         return power_result
     finally:
         _COMPUTE_LOCK.release()
@@ -276,7 +353,11 @@ def current_pipeline_run() -> dict | None:
     completed = st.session_state.get("completed_params")
     if power_result is None or sigma_result is None or completed is None:
         return None
-    return {"params": deepcopy(completed), "power_result": power_result, "sigma_result": sigma_result}
+    return {
+        "params": deepcopy(completed),
+        "power_result": power_result,
+        "sigma_result": sigma_result,
+    }
 
 
 def refresh_saved_runs() -> list[dict]:
@@ -289,8 +370,16 @@ def save_current_run(name: str, notes: str = "") -> dict | None:
     if current is None:
         return None
     runs = load_all_runs()
-    unique_name = unique_run_name(name.strip() or auto_run_name(current["params"], len(runs) + 1), runs)
-    run = create_run_from_current_state(current, unique_name, notes, next_color_index(), not any(r.get("is_baseline") for r in runs))
+    unique_name = unique_run_name(
+        name.strip() or auto_run_name(current["params"], len(runs) + 1), runs
+    )
+    run = create_run_from_current_state(
+        current,
+        unique_name,
+        notes,
+        next_color_index(),
+        not any(r.get("is_baseline") for r in runs),
+    )
     save_run(run)
     generate_run_exports(run)
     set_last_run_id(run["run_id"])
@@ -304,7 +393,11 @@ def save_current_run(name: str, notes: str = "") -> dict | None:
 def load_run_into_session(run_id: str) -> dict | None:
     init_session()
     run = load_run(run_id)
-    if run is None or not run.get("arrays"):
+    if (
+        run is None
+        or not run.get("arrays")
+        or run.get("integrity_status", {}).get("state") == "invalid"
+    ):
         return None
     _hydrate_run(run)
     set_last_run_id(run_id)

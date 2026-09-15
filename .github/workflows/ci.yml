@@ -1,0 +1,36 @@
+name: Verify HaloForge
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install application and quality tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pip-audit ruff
+      - name: Check static correctness
+        run: ruff check app.py config content engine state tests
+      - name: Check formatting
+        run: ruff format --check app.py config content engine state tests
+      - name: Run the deterministic test suite
+        run: pytest -q
+      - name: Audit declared Python dependencies
+        run: pip-audit -r requirements.txt
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production image
+        run: docker build --tag haloforge:${{ github.sha }} .

@@ -5,3 +5,7 @@ pandas==2.3.3
 scipy==1.16.3
 sympy==1.14.0
 pytest==9.0.2
+pyarrow==21.0.0
+reportlab==5.0.1
+pypdf==6.18.1
+kaleido==1.4.0

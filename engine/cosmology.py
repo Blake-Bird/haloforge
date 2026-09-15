@@ -32,7 +32,12 @@ def omega_radiation(params: dict) -> float:
 
 def omega_de(params: dict) -> float:
     """Flatness closure residual interpreted as dark energy today."""
-    return 1.0 - float(params["Omega_m"]) - float(params["Omega_k"]) - omega_radiation(params)
+    return (
+        1.0
+        - float(params["Omega_m"])
+        - float(params["Omega_k"])
+        - omega_radiation(params)
+    )
 
 
 def rho_crit(params: dict) -> float:
@@ -72,7 +77,9 @@ def parse_custom_redshifts(text: str) -> tuple[list[float], list[str]]:
     return values, issues
 
 
-def combined_redshifts(presets: list[float], custom_text: str) -> tuple[list[float], list[str]]:
+def combined_redshifts(
+    presets: list[float], custom_text: str
+) -> tuple[list[float], list[str]]:
     """Merge preset and custom redshifts into a sorted unique list."""
     custom, issues = parse_custom_redshifts(custom_text)
     merged = sorted({float(v) for v in [*presets, *custom]})
@@ -92,4 +99,3 @@ def derived_quantities(params: dict) -> dict:
         "a_c": ede["a_c"],
         "z_c": ede["z_c"],
     }
-

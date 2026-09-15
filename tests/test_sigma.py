@@ -1,6 +1,12 @@
 import numpy as np
 
-from engine.sigma import R_from_mass, build_power_interpolator, dlog_sigma_dlog_M, mass_from_R, sigma_integrand_per_logk
+from engine.sigma import (
+    R_from_mass,
+    build_power_interpolator,
+    dlog_sigma_dlog_M,
+    mass_from_R,
+    sigma_integrand_per_logk,
+)
 
 
 def test_mass_radius_roundtrip():
@@ -12,7 +18,7 @@ def test_mass_radius_roundtrip():
 
 def test_power_interpolator_positive():
     k = np.logspace(-3, 1, 20)
-    p = k ** -1
+    p = k**-1
     interp = build_power_interpolator(k, p)
     assert float(interp(0.1)) > 0
 
@@ -27,8 +33,7 @@ def test_sigma_integrand_positive_shape():
 
 def test_dlog_sigma_shape():
     m = np.logspace(8, 12, 10)
-    sigma = m ** -0.1
+    sigma = m**-0.1
     slope = dlog_sigma_dlog_M(m, sigma)
     assert slope.shape == m.shape
     assert np.all(slope < 0)
-

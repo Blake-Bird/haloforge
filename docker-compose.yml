@@ -7,10 +7,11 @@ services:
     ports:
       - "7860:7860"
     environment:
-      HALOFORGE_DATA_DIR: /app/data
+      HALOFORGE_DATA_DIR: /var/lib/haloforge
+      HALOFORGE_DEPLOYMENT: local
       HALOFORGE_CLASS_TIMEOUT_SECONDS: 1800
     volumes:
-      - ./data:/app/data
+      - haloforge_data:/var/lib/haloforge
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
@@ -19,3 +20,6 @@ services:
         limits:
           memory: 12G
           cpus: "2.0"
+
+volumes:
+  haloforge_data:

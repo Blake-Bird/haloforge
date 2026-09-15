@@ -1,6 +1,12 @@
 import numpy as np
 
-from engine.windows import gaussian_W, sharp_k_W, top_hat_W, top_hat_W_series, window_squared
+from engine.windows import (
+    gaussian_W,
+    sharp_k_W,
+    top_hat_W,
+    top_hat_W_series,
+    window_squared,
+)
 
 
 def test_top_hat_zero_and_tiny_are_close_to_one():
@@ -26,4 +32,3 @@ def test_sharp_k_expected_values():
 def test_window_squared_nonnegative():
     y = np.logspace(-4, 2, 100)
     assert np.all(window_squared(y, "Top-hat") >= 0)
-
