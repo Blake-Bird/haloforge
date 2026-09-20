@@ -46,7 +46,7 @@ FIT_CONTRACTS = {
         "empirical", "fof_b0.2", (0, 0), citation="Warren et al. 2006"
     ),
     "Reed 2007": FitContract(
-        "empirical", "fof_b0.2", (0, 30), (-1.7, 0.9), citation="Reed et al. 2007"
+        "empirical", "fof_b0.2", (0, 30), (-0.5, 1.2), citation="Reed et al. 2007"
     ),
     "Tinker 2008": FitContract(
         "empirical", "so_mean", (0, 2.5), (-0.6, 0.4), (200, 3200), "Tinker et al. 2008"
@@ -81,6 +81,19 @@ FIT_ALIASES = {
 }
 
 
+def all_fit_points_checked(validity: dict | None) -> bool:
+    """Require nonempty Boolean pointwise evidence, not general truthiness."""
+    if not validity or validity.get("calibrated_mask") is None:
+        return False
+    try:
+        mask = np.asarray(validity["calibrated_mask"])
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        mask.ndim == 1 and mask.size > 0 and mask.dtype.kind == "b" and mask.all()
+    )
+
+
 def fit_contract(name: str) -> FitContract:
     name = FIT_ALIASES.get(name, name)
     try:
@@ -113,6 +126,8 @@ def validity_report(
     validate_fit_configuration(name, mass_definition, delta_halo)
     contract = fit_contract(name)
     sigma = np.asarray(sigma, dtype=float)
+    if not np.isfinite(z) or z < 0:
+        raise ValueError("Redshift must be finite and nonnegative")
     if np.any(~np.isfinite(sigma)) or np.any(sigma <= 0):
         raise ValueError("sigma must be finite and strictly positive")
     valid = np.ones(sigma.shape, dtype=bool)
@@ -120,11 +135,11 @@ def validity_report(
     if contract.redshift_range is not None:
         lo, hi = contract.redshift_range
         if not lo <= float(z) <= hi:
-            valid[:] = False
+            valid[...] = False
             reasons.append(f"z={z:g} is outside the published range {lo:g}–{hi:g}")
     if contract.log_inv_sigma_range is not None:
         lo, hi = contract.log_inv_sigma_range
-        lnis = np.log(1 / sigma)
+        lnis = -np.log(sigma)
         in_range = (lnis >= lo) & (lnis <= hi)
         valid &= in_range
         if not np.all(in_range):

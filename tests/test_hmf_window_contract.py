@@ -67,9 +67,11 @@ def test_save_and_export_preserve_variance_without_inventing_halos(
     files = run_storage.generate_run_exports(run)
     restored = run_storage.load_run(run["run_id"])
     np.testing.assert_array_equal(restored["arrays"]["sigma"], run["arrays"]["sigma"])
+    assert restored["integration_method"] == run["integration_method"]
     assert ("hmf_press_schechter_z0" in restored["arrays"]) == (window == "Top-hat")
     with ZipFile(files["exports.zip"]) as archive:
         assert "sigma.csv" in archive.namelist()
+        assert run["integration_method"] in archive.read("run_summary.md").decode()
         assert ("hmf.csv" in archive.namelist()) == (window == "Top-hat")
         if window != "Top-hat":
             assert "Unavailable" in archive.read("run_summary.md").decode()

@@ -18,11 +18,11 @@ jobs:
       - name: Install application and quality tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pip-audit ruff
+          python -m pip install -r requirements-dev.txt
       - name: Check static correctness
-        run: ruff check app.py config content engine state tests
+        run: ruff check app.py config content engine state tests scripts
       - name: Check formatting
-        run: ruff format --check app.py config content engine state tests
+        run: ruff format --check app.py config content engine state tests scripts
       - name: Run the deterministic test suite
         run: pytest -q
       - name: Audit declared Python dependencies
@@ -32,5 +32,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build the production image
-        run: docker build --tag haloforge:${{ github.sha }} .
+      - name: Build the production and test images
+        run: |
+          docker build --target test --tag haloforge-test:${{ github.sha }} .
+          docker build --tag haloforge:${{ github.sha }} .
+      - name: Run the complete suite in the production-derived test image
+        run: docker run --rm -e HALOFORGE_TEST_CLASS=1 haloforge-test:${{ github.sha }} python -m pytest -q -p no:cacheprovider
+      - name: Verify the shipped container and compiled solver
+        run: |
+          docker run --detach --rm --name haloforge-ci -p 7860:7860 haloforge:${{ github.sha }}
+          cleanup() {
+            docker logs haloforge-ci || true
+            docker stop haloforge-ci || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:7860/_stcore/health; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "HaloForge did not become healthy within 60 seconds." >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          docker exec haloforge-ci python -c "from config.defaults import DEFAULT_PARAMS; from engine.class_runner import tiny_class_smoke_test; result = tiny_class_smoke_test(DEFAULT_PARAMS); assert result['ok'], result; print(result['message'])"
+          docker exec haloforge-ci python -c "from state.figure_export import static_figure_export_smoke_test; result = static_figure_export_smoke_test(); assert len(result) == 3, result; print(result)"

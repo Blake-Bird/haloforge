@@ -138,7 +138,7 @@ CONTROL_HELP = {
     "k_min": "Minimum wavenumber for matter-power sampling.",
     "k_max": "Maximum wavenumber for matter-power sampling. Too low can bias low-mass sigma(M).",
     "k_points": "Number of k samples used for P(k). More points can improve resolution but slow CLASS.",
-    "quad_limit": "Integration subdivision limit for sigma(M) and growth-related quadrature.",
+    "quad_limit": "Mass samples processed per integration batch. This changes memory use, not integration accuracy.",
     "window_type": "Smoothing kernel used when sigma(M) integrates P(k) through W(kR).",
     "fitting": "Halo multiplicity relation used to convert sigma(M,z) into dn/dlnM.",
     "delta_c": "Linear collapse threshold used in peak height and HMF fitting functions.",

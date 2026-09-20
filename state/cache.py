@@ -12,10 +12,11 @@ from typing import Any
 import numpy as np
 
 from state.storage_policy import default_data_root
+from engine.power_contract import validate_power_arrays
 
 DATA_ROOT = default_data_root()
 CACHE_DIR = DATA_ROOT / "cache"
-ENGINE_VERSION = "strict-axiclass-v4-background-provenance"
+ENGINE_VERSION = "strict-axiclass-v5-zero-ede-closed-background"
 CACHE_SCHEMA_VERSION = "haloforge-power-cache-v2"
 SLOW_KEYS = [
     "A_s",
@@ -81,22 +82,6 @@ def _integrity_digest(arrays: dict[str, np.ndarray], metadata: dict[str, Any]) -
     return digest.hexdigest()
 
 
-def _valid_arrays(arrays: dict[str, np.ndarray]) -> bool:
-    k, power = arrays.get("k"), arrays.get("P")
-    return bool(
-        k is not None
-        and power is not None
-        and k.ndim == power.ndim == 1
-        and k.size >= 2
-        and k.shape == power.shape
-        and np.all(np.isfinite(k))
-        and np.all(np.isfinite(power))
-        and np.all(k > 0)
-        and np.all(power > 0)
-        and np.all(np.diff(k) > 0)
-    )
-
-
 def cache_path(params: dict) -> Path:
     return CACHE_DIR / f"{cache_key(params)}.npz"
 
@@ -108,6 +93,8 @@ def load_cached_power(params: dict) -> dict[str, Any] | None:
     try:
         with np.load(path, allow_pickle=False) as data:
             metadata = json.loads(str(data["metadata"].item()))
+            if not isinstance(metadata, dict) or ARRAY_KEYS.intersection(metadata):
+                raise ValueError("Cache metadata must not redefine scientific arrays")
             arrays = {key: data[key] for key in ARRAY_KEYS if key in data.files}
             envelope = metadata.pop("cache_integrity", None)
             if (
@@ -124,12 +111,8 @@ def load_cached_power(params: dict) -> dict[str, Any] | None:
                 )
             if envelope.get("content_sha256") != _integrity_digest(arrays, metadata):
                 raise ValueError("cache content checksum mismatch")
-            if not _valid_arrays(arrays):
-                raise ValueError("cache arrays violate power-spectrum invariants")
+            validate_power_arrays(arrays, params)
             result = {**arrays, **metadata, "from_cache": True}
-            result.setdefault("P_by_z", np.asarray([result["P"]]))
-            result.setdefault("redshifts", np.asarray([0.0]))
-            result.setdefault("growth_class", np.asarray([1.0]))
             return result
     except Exception:
         path.unlink(missing_ok=True)
@@ -141,8 +124,12 @@ def save_cached_power(params: dict, result: dict[str, Any]) -> Path:
     path = cache_path(params)
     metadata = _metadata_from_result(result)
     arrays = {key: np.asarray(result[key]) for key in ARRAY_KEYS if key in result}
-    if not _valid_arrays(arrays):
-        raise ValueError("Refusing to cache an invalid matter power spectrum.")
+    try:
+        validate_power_arrays(arrays, params)
+    except ValueError as exc:
+        raise ValueError(
+            f"Refusing to cache an invalid matter power spectrum: {exc}"
+        ) from exc
     content_sha256 = _integrity_digest(arrays, metadata)
     metadata["cache_integrity"] = {
         "schema_version": CACHE_SCHEMA_VERSION,

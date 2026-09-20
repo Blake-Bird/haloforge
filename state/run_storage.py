@@ -20,6 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from engine.hmf import cumulative_hmf
+from engine.redshift import redshift_index
 from engine.fingerprint import cosmic_fingerprint, fingerprint_markdown
 from state.run_model import RUN_COLORS
 from state.provenance import file_sha256, reproducibility_hash
@@ -190,6 +191,7 @@ def save_run(run: dict) -> dict:
     """Persist a run using atomic replacement so interrupted writes cannot corrupt it."""
     _ensure_dirs()
     with _STORAGE_LOCK:
+        _require_writable_run(run)
         run = _normalize_run(migrate_run_document(run))
         if not run["audit_trail"]:
             action = (
@@ -215,6 +217,22 @@ def save_run(run: dict) -> dict:
             _json_path(run["run_id"]), json.dumps(_metadata(run), indent=2, default=str)
         )
     return run
+
+
+def _require_writable_run(run: dict) -> None:
+    """Do not replace evidence of corruption with a newly computed checksum."""
+    if run.get("integrity_status", {}).get("state") == "invalid":
+        raise ValueError("Cannot save a run that failed integrity verification.")
+    path = _json_path(run["run_id"])
+    if path.exists():
+        existing = load_run(run["run_id"])
+        if (
+            existing is None
+            or existing.get("integrity_status", {}).get("state") == "invalid"
+        ):
+            raise ValueError(
+                "Cannot overwrite a damaged saved run. Restore its original files or calculate a new run."
+            )
 
 
 def _load_arrays(run: dict) -> dict:
@@ -390,7 +408,14 @@ def rename_run(run_id: str, requested_name: str) -> dict | None:
 
 
 def set_baseline(run_id: str) -> None:
-    for run in load_all_runs():
+    runs = load_all_runs()
+    selected = next((run for run in runs if run["run_id"] == run_id), None)
+    if selected is None:
+        raise ValueError("The selected baseline run does not exist.")
+    _require_writable_run(selected)
+    for run in runs:
+        if run.get("integrity_status", {}).get("state") == "invalid":
+            continue
         desired = run["run_id"] == run_id
         if run.get("is_baseline") != desired:
             run["is_baseline"] = desired
@@ -463,16 +488,37 @@ def save_draft_params(params: dict) -> None:
 def load_draft_params() -> dict | None:
     try:
         value = json.loads(DRAFT_PARAMS_PATH.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except Exception:
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise ValueError("The saved draft could not be read as JSON.") from exc
+    if not isinstance(value, dict):
+        raise ValueError("The saved draft must contain a parameter object.")
+    return value
+
+
+def _focused_saved_array(
+    run: dict, name: str, by_redshift: str, legacy: str | None = None
+) -> np.ndarray:
+    arrays = run.get("arrays", {})
+    z = float(run.get("params", {}).get("single_z", 0.0))
+    redshifts = np.asarray(arrays.get("redshifts", [0.0]), dtype=float)
+    index = redshift_index(redshifts, z)
+    if by_redshift in arrays:
+        values = np.asarray(arrays[by_redshift], dtype=float)
+        if values.ndim != 2 or values.shape[0] != redshifts.size:
+            raise ValueError(f"Stored {by_redshift} does not match the redshift grid")
+        return values[index]
+    if z != 0:
+        raise ValueError(f"Stored {name} is only available at z = 0")
+    return np.asarray(arrays.get(name, arrays.get(legacy, [])), dtype=float)
 
 
 def _power_result_from_run(run: dict) -> dict:
     arrays = run.get("arrays", {})
     return {
         "k": arrays.get("k", np.array([], dtype=float)),
-        "P": arrays.get("P", np.array([], dtype=float)),
+        "P": _focused_saved_array(run, "P", "P_by_z"),
         "derived": run.get("derived", {}),
         "class_status": run.get("class_status", ""),
         "class_error": run.get("class_error", ""),
@@ -486,15 +532,16 @@ def _sigma_result_from_run(run: dict) -> dict:
         "M_h": arrays.get("M_h", np.array([], dtype=float)),
         "M": arrays.get("M", np.array([], dtype=float)),
         "R": arrays.get("R", np.array([], dtype=float)),
-        "sigma": arrays.get("sigma", np.array([], dtype=float)),
-        "dlnsigma_dlnM": arrays.get(
-            "dlnsigma_dlnM", arrays.get("dlog_sigma_dlog_M", np.array([], dtype=float))
+        "sigma": _focused_saved_array(run, "sigma", "sigma_by_z"),
+        "dlnsigma_dlnM": _focused_saved_array(
+            run, "dlnsigma_dlnM", "dlnsigma_dlnM_by_z", "dlog_sigma_dlog_M"
         ),
         "rho0": run.get("rho0"),
         "window_type": run.get(
             "window_type", run.get("params", {}).get("window_type", "")
         ),
         "delta_c": float(run.get("params", {}).get("delta_c", 1.686)),
+        "integration_method": run.get("integration_method", "log-k Simpson"),
         "numerical_diagnostics": run.get("numerical_diagnostics", {}),
     }
 
@@ -532,7 +579,8 @@ def generate_run_exports(run: dict) -> dict:
     # Establish the array checksum before emitting the bundle's integrity
     # artifact. This gives direct callers the same guarantee as ordinary
     # calculate-and-save flows.
-    save_run(run)
+    saved = save_run(run)
+    run["integrity"] = saved["integrity"]
     export_dir = run_export_dir(run["run_id"])
     export_dir.mkdir(parents=True, exist_ok=True)
     arrays = run.get("arrays", {})
@@ -863,6 +911,21 @@ def _rows_to_csv(rows: list[dict]) -> str:
 
 
 def export_power_csv(power_result: dict) -> str:
+    k = np.asarray(power_result["k"], dtype=float)
+    power = np.asarray(power_result["P"], dtype=float)
+    if (
+        k.ndim != 1
+        or k.size < 2
+        or power.shape != k.shape
+        or not np.isfinite(k).all()
+        or not np.isfinite(power).all()
+        or np.any(k <= 0)
+        or np.any(power <= 0)
+        or np.any(np.diff(k) <= 0)
+    ):
+        raise ValueError(
+            "Power export requires matching positive finite samples on an increasing k grid"
+        )
     rows = [
         {
             "k_Mpc^-1": float(k),
@@ -876,7 +939,26 @@ def export_power_csv(power_result: dict) -> str:
 
 def export_sigma_csv(sigma_result: dict) -> str:
     rows = []
-    deriv = sigma_result.get("dlnsigma_dlnM", np.zeros_like(sigma_result["sigma"]))
+    names = ("M_h", "M", "R", "sigma", "dlnsigma_dlnM")
+    columns = [np.asarray(sigma_result.get(name, []), dtype=float) for name in names]
+    shape = columns[0].shape
+    if (
+        len(shape) != 1
+        or columns[0].size < 2
+        or any(
+            column.shape != shape or not np.isfinite(column).all() for column in columns
+        )
+    ):
+        raise ValueError(
+            "Variance export requires matching finite mass, radius, sigma, and derivative samples"
+        )
+    if any(np.any(column <= 0) for column in columns[:4]) or any(
+        np.any(np.diff(column) <= 0) for column in columns[:2]
+    ):
+        raise ValueError(
+            "Variance export requires positive values and increasing mass grids"
+        )
+    deriv = columns[-1]
     for M_h, M, R, sigma, slope in zip(
         sigma_result["M_h"],
         sigma_result["M"],
@@ -948,6 +1030,11 @@ def _research_table_metadata(
     return {
         "haloforge.schema_version": TABLE_METADATA_SCHEMA_VERSION,
         "haloforge.table": table_name,
+        "haloforge.redshift": str(
+            0.0
+            if table_name.endswith("_z0")
+            else float(run.get("params", {}).get("single_z", 0.0))
+        ),
         "haloforge.units": json.dumps(units, sort_keys=True),
         "haloforge.descriptions": json.dumps(descriptions, sort_keys=True),
         "haloforge.run_id": str(run.get("run_id", "unavailable")),
@@ -1125,7 +1212,7 @@ def summary_markdown_report(
             if sigma.get("window_type", params.get("window_type")) == "Top-hat"
             else "Unavailable: alternate-window variance has no calibrated halo mass assignment in HaloForge."
         ),
-        "- integration: fixed log-k Simpson rule on the sampled CLASS grid",
+        f"- integration: {sigma.get('integration_method', 'not recorded')}",
         f"- numerical sensitivity check: {diagnostics.get('method', 'not recorded')}",
         f"- numerical scope limit: {diagnostics.get('scope_limit', 'not recorded')}",
         f"- run schema: {provenance.get('schema_version', 'not recorded')}",
@@ -1154,7 +1241,7 @@ def export_readme(run: dict) -> str:
         "- `params.json`: submitted cosmological, halo-model, and numerical parameters.",
         "- `class_settings.json`: exact CLASS/AxiCLASS settings sent to the solver.",
         "- `power_spectrum.csv` / `.parquet`: `k_Mpc^-1`, linear `P_Mpc^3`, and dimensionless `Delta2` at the focused redshift. The Parquet schema embeds field units, descriptions, the reproducibility hash, and links to this bundle's evidence records.",
-        "- `sigma.csv` / `.parquet`: `M_h_hinv_Msun`, physical `M_Msun`, top-hat-equivalent `R_Mpc`, `sigma`, and `dlnsigma_dlnM`. The Parquet schema embeds field units, descriptions, the reproducibility hash, and links to this bundle's evidence records.",
+        "- `sigma.csv` / `.parquet`: `M_h_hinv_Msun`, physical `M_Msun`, top-hat-equivalent `R_Mpc`, `sigma`, and `dlnsigma_dlnM` at the focused redshift. The Parquet schema embeds field units, descriptions, the reproducibility hash, and links to this bundle's evidence records.",
         "- `hmf.csv` / `.parquet`: analytic Press-Schechter and Sheth-Tormen top-hat reference HMF products at z=0 where available. The Parquet schema embeds units, finite-grid cumulative semantics, provenance links, and an explicit warning not to treat these columns as a universal empirical calibration.",
         "- `data_dictionary.json`: one versioned field-by-field guide to every included scientific table, including files, units, definitions, provenance links, and table-specific scope limits.",
         "- `notebook.json`: question, prior hypothesis, conclusion, caveats, citations, chart-region annotations, branch parent, and explicit linked follow-up experiment IDs.",
@@ -1266,10 +1353,11 @@ import json
 from pathlib import Path
 import numpy as np
 
-SETTINGS = json.loads(r'''
+SETTINGS = json.loads('''
         + repr(settings)
         + """)
 ROOT = Path(__file__).resolve().parent
+REDSHIFT = float(json.loads((ROOT / "params.json").read_text()).get("single_z", 0.0))
 
 try:
     from classy import Class
@@ -1282,8 +1370,8 @@ cosmo.set(SETTINGS)
 cosmo.compute()
 try:
     rows = []
-    for k in np.atleast_1d(stored["k_Mpc^-1"]):
-        value = float(cosmo.pk_lin(float(k), 0.0))
+    for k in np.atleast_1d(stored["k_Mpc1"]):
+        value = float(cosmo.pk_lin(float(k), REDSHIFT))
         rows.append((float(k), value, float(k**3 * value / (2.0 * np.pi**2))))
     with (ROOT / "recreated_power_spectrum.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -1292,7 +1380,7 @@ try:
     reference = np.atleast_1d(stored["P_Mpc3"])
     recreated = np.asarray([row[1] for row in rows])
     fractional = np.abs(recreated / reference - 1.0)
-    print(f"max fractional P(k) discrepancy at z=0: {{fractional.max():.3e}}")
+    print(f"max fractional P(k) discrepancy at z={REDSHIFT:g}: {fractional.max():.3e}")
     print("Interpret discrepancies using provenance.json; never discard a failed agreement.")
 finally:
     cosmo.struct_cleanup()

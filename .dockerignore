@@ -1,8 +1,10 @@
 .git
 data
+output
+tmp
 .env
 .env.*
-.venv
+.venv*
 venv
 node_modules
 __pycache__

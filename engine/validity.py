@@ -7,9 +7,10 @@ them into a misleading confidence percentage.
 from __future__ import annotations
 
 from engine.assurance import assurance_report
+from engine.contracts import all_fit_points_checked
 from engine.uncertainty import uncertainty_inventory
 
-VALIDITY_SCHEMA_VERSION = "haloforge-scientific-validity-v1"
+VALIDITY_SCHEMA_VERSION = "haloforge-scientific-validity-v3"
 
 
 def scientific_validity_record(
@@ -25,7 +26,7 @@ def scientific_validity_record(
     claims = assurance_report(run, hmf_validity)
     uncertainties = uncertainty_inventory(run, hmf_validity, benchmark)
     states = {row["claim"]: row["state"] for row in claims}
-    computed = states.get("Computed precisely") == "pass"
+    computed = states.get("Solver completed") == "pass"
     publication = states.get("Suitable for publication") == "pass"
     if publication:
         overall = "publication_ready"
@@ -46,10 +47,8 @@ def scientific_validity_record(
         "claims": claims,
         "uncertainties": uncertainties,
         "hmf_contract": {
-            "all_evaluated_points_calibrated": bool(
+            "all_evaluated_points_pass_fit_checks": all_fit_points_checked(
                 hmf_validity
-                and hmf_validity.get("calibrated_mask") is not None
-                and all(hmf_validity["calibrated_mask"])
             ),
             "reasons": list((hmf_validity or {}).get("reasons", [])),
         },

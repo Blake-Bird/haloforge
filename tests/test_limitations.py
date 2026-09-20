@@ -4,7 +4,7 @@ from content.limitations import LIMITATIONS, LIMITATIONS_VERSION, limitations_ro
 
 
 def test_known_limitations_are_versioned_and_actionable():
-    assert LIMITATIONS_VERSION.endswith("v1")
+    assert LIMITATIONS_VERSION == "haloforge-known-limitations-v2"
     rows = limitations_rows()
     assert len(rows) == len(LIMITATIONS)
     assert all(row["status"] == "open" and row["mitigation"] for row in rows)

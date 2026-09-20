@@ -5,7 +5,7 @@ services:
       args:
         AXICLASS_REF: 1b0a585f86a3dce6babd66e486535368b2799ec7
     ports:
-      - "7860:7860"
+      - "127.0.0.1:7860:7860"
     environment:
       HALOFORGE_DATA_DIR: /var/lib/haloforge
       HALOFORGE_DEPLOYMENT: local

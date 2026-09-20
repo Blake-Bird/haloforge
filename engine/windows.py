@@ -32,9 +32,11 @@ def top_hat_W_exact(y: np.ndarray | float) -> np.ndarray:
 def top_hat_W(y: np.ndarray | float) -> np.ndarray:
     """Taylor-safe real-space top-hat window."""
     y_arr = np.asarray(y, dtype=float)
-    return np.where(
-        np.abs(y_arr) < 0.1, top_hat_W_series(y_arr), top_hat_W_exact(y_arr)
-    )
+    out = np.empty_like(y_arr)
+    small = np.abs(y_arr) < 0.1
+    out[small] = top_hat_W_series(y_arr[small])
+    out[~small] = top_hat_W_exact(y_arr[~small])
+    return out
 
 
 def gaussian_W(y: np.ndarray | float) -> np.ndarray:
@@ -44,7 +46,7 @@ def gaussian_W(y: np.ndarray | float) -> np.ndarray:
 
 def sharp_k_W(y: np.ndarray | float) -> np.ndarray:
     """Sharp-k W(y)=1 for y<=1 and 0 otherwise."""
-    return (np.asarray(y, dtype=float) <= 1.0).astype(float)
+    return (np.abs(np.asarray(y, dtype=float)) <= 1.0).astype(float)
 
 
 def window_W(y: np.ndarray | float, window_type: str) -> np.ndarray:
@@ -53,7 +55,9 @@ def window_W(y: np.ndarray | float, window_type: str) -> np.ndarray:
         return gaussian_W(y)
     if window_type == "Sharp-k":
         return sharp_k_W(y)
-    return top_hat_W(y)
+    if window_type == "Top-hat":
+        return top_hat_W(y)
+    raise ValueError(f"Unknown smoothing window: {window_type}")
 
 
 def window_squared(y: np.ndarray | float, window_type: str) -> np.ndarray:

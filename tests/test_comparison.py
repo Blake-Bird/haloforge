@@ -50,3 +50,17 @@ def test_point_comparison_uses_bounded_log_interpolation_and_rejects_extrapolati
     assert sampled["value"] == pytest.approx(25)
     with pytest.raises(ValueError, match="stored domain"):
         compare_at_point([1, 10], [1, 10], [1, 10], [1, 10], 20)
+
+
+def test_underflow_endpoint_does_not_change_positive_bracket_interpolation():
+    x, y = [1, 10, 100], [1, 0.01, 0]
+    assert sample_curve_at(x, y, 5)["value"] == pytest.approx(0.04)
+    assert sample_curve_at(x, y, 55)["value"] == pytest.approx(0.005)
+    ratios = transform_curve([1, 5, 10, 100], [1, 0.04, 0.01, 0], x, y, "Ratio")
+    np.testing.assert_allclose(ratios[:3], 1)
+    assert np.isnan(ratios[-1])
+
+
+def test_point_comparison_rejects_overflow():
+    with pytest.raises(ValueError, match="floating-point range"):
+        compare_at_point([1, 2], [1e308, 1e308], [1, 2], [1e-300, 1e-300], 1)

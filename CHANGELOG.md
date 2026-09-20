@@ -4,6 +4,10 @@ This project does not yet have a tagged public release.
 
 ## Unreleased
 
+- Validate physical inputs before launching CLASS, with shared checks for app and direct solver calls. Reject malformed EDE initial conditions, non-finite cosmological parameters, and fractional sample counts.
+- Add a frozen independent CAMB reference for flat ΛCDM matter power and top-hat variance at three redshifts, with a reproducible generator and explicit tolerances.
+- Correct structure-field RMS reporting, coordinate orientation, and plot bounds; test Fourier normalization and shared-phase amplitude scaling.
+
 - Added a guided, prediction-first Explore experience with a matched baseline/candidate reveal, a bounded cluster-scale abundance comparison, direct next-route navigation, and staged causal evidence views.
 - Guided experiments now begin with no preselected outcome. A learner must deliberately choose an expected outcome—including the scientifically valid “I am not sure yet”—before the safe one-change experiment can be staged or calculated.
 - Added eight four-layer conceptual-zoom entries, prepared modules across five subject areas, projector-oriented lecture mode, and local lab-section artifacts with explicit no-authentication/no-hidden-solution boundaries.
@@ -20,6 +24,9 @@ This project does not yet have a tagged public release.
 - Added numerical range-sensitivity diagnostics, provenance records, export manifests, and reproducibility hashes.
 - Moved the local default data location outside the source checkout and fail-closed unauthenticated hosted filesystem persistence.
 - Added deterministic tests and GitHub Actions verification.
+- Strengthened container CI from image construction alone to a bounded startup health check plus a real packaged AxiCLASS smoke calculation, so the shipped image and solver binding are exercised together on every change.
+- Updated Pytest and PyArrow to the advisory-fixed releases reported by the dependency audit.
+- Bundled Chromium in the production image and added in-image static-export tests, fixing Docker-only PDF/SVG/PNG export failures from Kaleido's missing browser runtime.
 
 ## Evidence and release boundary
 

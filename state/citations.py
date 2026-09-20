@@ -57,7 +57,7 @@ def export_citations(run: dict) -> dict:
             solver,
             _entry(
                 "haloforge-sigma-method",
-                "HaloForge stored log-k Simpson smoothing calculation",
+                f"HaloForge smoothing calculation: {run.get('integration_method', 'method not recorded')}",
                 "numerical method",
                 "The finite sampled-range limits and checks are in scientific_validity.json.",
             ),

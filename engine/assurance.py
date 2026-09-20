@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from engine.contracts import all_fit_points_checked
+
 
 def assurance_report(run: dict, hmf_validity: dict | None = None) -> list[dict]:
     """Return distinct, deliberately conservative claims for the current run."""
@@ -19,25 +21,20 @@ def assurance_report(run: dict, hmf_validity: dict | None = None) -> list[dict]:
     computed = bool(
         len(arrays.get("k", run.get("power_result", {}).get("k", [])))
         and run.get("class_status", run.get("power_result", {}).get("class_status"))
-        == "AXICLASS"
+        in {"CLASS", "AXICLASS"}
+        and run.get("integrity_status", {}).get("state") != "invalid"
     )
-    calibration_ok = bool(
-        hmf_validity
-        and hmf_validity.get("calibrated_mask") is not None
-        and all(hmf_validity["calibrated_mask"])
-    )
+    calibration_ok = all_fit_points_checked(hmf_validity)
     params = run.get("params", {})
-    empirical = params.get("fitting") not in {
-        "Press-Schechter 1974",
-        "Sheth-Tormen 2001",
-    }
+    analytic = params.get("fitting") in {"Press-Schechter", "Press-Schechter 1974"}
+    sheth_tormen = params.get("fitting") in {"Sheth-Tormen", "Sheth-Tormen 2001"}
     return [
         {
-            "claim": "Computed precisely",
+            "claim": "Solver completed",
             "state": "pass" if computed else "unknown",
-            "detail": "AxiCLASS returned the stored sampled arrays."
+            "detail": "CLASS/AxiCLASS returned the stored sampled arrays; completion alone does not establish accuracy."
             if computed
-            else "No successful AxiCLASS array payload is available.",
+            else "No usable completed CLASS/AxiCLASS payload is available.",
         },
         {
             "claim": "Numerically converged",
@@ -53,14 +50,18 @@ def assurance_report(run: dict, hmf_validity: dict | None = None) -> list[dict]:
         },
         {
             "claim": "Calibrated by simulations",
-            "state": "pass"
-            if calibration_ok and empirical
-            else ("not applicable" if not empirical else "not established"),
-            "detail": "All plotted HMF points are inside the fit contract."
-            if calibration_ok and empirical
+            "state": "not applicable"
+            if analytic
+            else "review"
+            if calibration_ok
+            else "not established",
+            "detail": "Press-Schechter is an analytic collapse model, not a simulation fit."
+            if analytic
+            else "Sheth-Tormen includes simulation-fitted coefficients. Evaluation of its formula does not establish calibration for this mass range or cosmology."
+            if sheth_tormen
             else (
-                "The selected analytic model is not a simulation calibration."
-                if not empirical
+                "The evaluated points pass the implemented fit-range checks. Simulation calibration still requires matching the halo definition, cosmology, and published domain."
+                if calibration_ok
                 else "At least some HMF points are outside the declared fit contract or could not be checked."
             ),
         },

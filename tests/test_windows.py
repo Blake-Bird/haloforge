@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from engine.windows import (
     gaussian_W,
@@ -32,3 +33,17 @@ def test_sharp_k_expected_values():
 def test_window_squared_nonnegative():
     y = np.logspace(-4, 2, 100)
     assert np.all(window_squared(y, "Top-hat") >= 0)
+
+
+def test_windows_are_even_and_unknown_names_are_rejected():
+    y = np.array([0, 0.01, 0.1, 1, 3])
+    for name in ("Top-hat", "Gaussian", "Sharp-k"):
+        np.testing.assert_array_equal(window_squared(y, name), window_squared(-y, name))
+    with pytest.raises(ValueError, match="Unknown smoothing window"):
+        window_squared(y, "Tophat typo")
+
+
+def test_top_hat_does_not_evaluate_large_arguments_in_taylor_branch():
+    with np.errstate(over="raise", invalid="raise", divide="raise"):
+        assert np.isfinite(top_hat_W(1e40))
+        assert top_hat_W(1e-100) == 1

@@ -149,6 +149,7 @@ def create_run_from_current_state(
         "provenance": provenance,
         "sigma8": power.get("derived", {}).get("sigma8"),
         "rho0": sigma.get("rho0"),
+        "integration_method": sigma.get("integration_method", "not recorded"),
         "numerical_diagnostics": deepcopy(sigma.get("numerical_diagnostics", {})),
         "window_type": sigma.get("window_type"),
         "hmf_status": "top_hat_model"

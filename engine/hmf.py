@@ -8,6 +8,7 @@ from engine.fitting_functions import fitting_values
 from engine.contracts import validity_report
 from engine.cosmology import omega_radiation
 from engine.sigma import dlog_sigma_dlog_M
+from engine.redshift import redshift_index
 
 
 def require_hmf_window(window: str) -> None:
@@ -56,6 +57,7 @@ def hmf_from_sigma(
         z=float(z),
         omega_m_z=float(omega_m_z),
         delta_halo=float(delta_halo),
+        neff=-6.0 * dlnsigma - 3.0,
     )
     hmf = (float(rho0) / M) * f_values * np.abs(dlnsigma)
     result = hmf / float(h) ** 3
@@ -76,11 +78,7 @@ def hmf_z(run: dict, z: float, fitting: str) -> dict:
         .get("h", float(params["H0"]) / 100.0)
     )
     redshifts = np.asarray(sigma_result.get("redshifts", [0.0]), dtype=float)
-    index = int(np.argmin(np.abs(redshifts - float(z))))
-    if not np.isclose(redshifts[index], float(z), rtol=0.0, atol=1e-9):
-        raise ValueError(
-            f"z={z:g} was not included in this CLASS run; rerun with that redshift selected"
-        )
+    index = redshift_index(redshifts, z)
     sigma_by_z = sigma_result.get("sigma_by_z")
     if sigma_by_z is None:
         sigma_by_z = np.asarray([sigma_result["sigma"]])
@@ -147,7 +145,9 @@ def cumulative_hmf(M_h_values: np.ndarray, hmf_values: np.ndarray) -> np.ndarray
     """Integrate dn/dlnM to the maximum sampled mass in linear time.
 
     This is n(M < halo mass < M_max), not an integral to infinity. The last
-    sample is exactly zero. No positive floor is added for logarithmic plots.
+    sample is exactly zero. Positive intervals use exact integration of their
+    log-log interpolant; intervals touching zero use a linear interpolant in
+    ln(M). No positive floor is added for logarithmic plots.
     """
     mass = np.asarray(M_h_values, dtype=float)
     hmf = np.asarray(hmf_values, dtype=float)
@@ -161,7 +161,17 @@ def cumulative_hmf(M_h_values: np.ndarray, hmf_values: np.ndarray) -> np.ndarray
         raise ValueError("Halo abundance must be finite and nonnegative")
     logm = np.log(mass)
     out = np.zeros_like(hmf)
-    intervals = (hmf[:-1] / 2 + hmf[1:] / 2) * np.diff(logm)
+    left, right = hmf[:-1], hmf[1:]
+    means = left / 2 + right / 2
+    positive = (left > 0) & (right > 0)
+    high = np.maximum(left[positive], right[positive])
+    low = np.minimum(left[positive], right[positive])
+    separation = np.log(high) - np.log(low)
+    factor = np.ones_like(separation)
+    unequal = separation > 0
+    factor[unequal] = -np.expm1(-separation[unequal]) / separation[unequal]
+    means[positive] = high * factor
+    intervals = means * np.diff(logm)
     out[:-1] = np.cumsum(intervals[::-1])[::-1]
     if not np.all(np.isfinite(out)):
         raise FloatingPointError("Cumulative halo abundance overflowed")

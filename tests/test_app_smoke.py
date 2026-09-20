@@ -94,3 +94,12 @@ def test_first_use_requires_a_deliberate_prediction_before_staging(
 
     app.radio[0].set_value("Fewer massive halos").run(timeout=15)
     assert not app.button[0].disabled
+
+    app.button[0].click().run(timeout=15)
+    assert app.session_state["onboarding_baseline_params"]["enable_ede"] is False
+    assert app.session_state["params"]["enable_ede"] is True
+    app.selectbox[0].set_value("More small-scale power").run(timeout=15)
+    assert not app.exception
+    assert app.radio[0].value is None
+    assert app.button[0].disabled
+    assert all(button.label != "Calculate the guided universe" for button in app.button)

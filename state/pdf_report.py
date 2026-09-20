@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -14,7 +19,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 def _text(value: object, fallback: str = "not recorded") -> str:
     text = str(value).strip() if value is not None else ""
-    return text or fallback
+    return escape(text or fallback).replace("\n", "<br/>")
 
 
 def _header_footer(canvas, document) -> None:
@@ -24,7 +29,7 @@ def _header_footer(canvas, document) -> None:
         document.leftMargin, 0.55 * inch, letter[0] - document.rightMargin, 0.55 * inch
     )
     canvas.setFillColor(colors.HexColor("#54646d"))
-    canvas.setFont("Helvetica", 8)
+    canvas.setFont("HaloSans", 8)
     canvas.drawString(
         document.leftMargin, 0.36 * inch, "HaloForge - local scientific run report"
     )
@@ -36,6 +41,14 @@ def _header_footer(canvas, document) -> None:
 
 def build_run_pdf(run: dict) -> bytes:
     """Render a provenance-first report; it intentionally contains no claims beyond saved evidence."""
+    font_dir = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+    for name, filename in (
+        ("HaloSans", "DejaVuSans.ttf"),
+        ("HaloSans-Bold", "DejaVuSans-Bold.ttf"),
+    ):
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(font_dir / filename)))
+    pdfmetrics.registerFontFamily("HaloSans", normal="HaloSans", bold="HaloSans-Bold")
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -51,7 +64,7 @@ def build_run_pdf(run: dict) -> bytes:
     title = ParagraphStyle(
         "RunTitle",
         parent=styles["Title"],
-        fontName="Helvetica-Bold",
+        fontName="HaloSans-Bold",
         fontSize=21,
         leading=25,
         textColor=colors.HexColor("#102a3b"),
@@ -61,7 +74,7 @@ def build_run_pdf(run: dict) -> bytes:
     subhead = ParagraphStyle(
         "RunSubhead",
         parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
+        fontName="HaloSans-Bold",
         fontSize=12,
         leading=15,
         textColor=colors.HexColor("#14536d"),
@@ -71,7 +84,7 @@ def build_run_pdf(run: dict) -> bytes:
     body = ParagraphStyle(
         "RunBody",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName="HaloSans",
         fontSize=9.2,
         leading=13,
         textColor=colors.HexColor("#1f2e35"),
@@ -87,7 +100,7 @@ def build_run_pdf(run: dict) -> bytes:
     story = [
         Paragraph(_text(run.get("name"), "Untitled HaloForge run"), title),
         Paragraph(
-            "A provenance-first summary of a local scientific calculation. A successful computation is not by itself a calibration, cosmology-support, or publication claim.",
+            "Saved parameters, calculation identity, and scientific checks. Solver completion alone does not establish convergence or validate halo abundances.",
             body,
         ),
     ]
@@ -105,14 +118,18 @@ def build_run_pdf(run: dict) -> bytes:
             _text(run.get("scientific_validity", {}).get("overall_state")),
         ],
     ]
-    table = Table(overview, colWidths=[1.45 * inch, 5.05 * inch])
+
+    def cells(rows, style=small):
+        return [[Paragraph(str(value), style) for value in row] for row in rows]
+
+    table = Table(cells(overview), colWidths=[1.45 * inch, 5.05 * inch])
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e9f0f2")),
                 ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#1f2e35")),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+                ("FONTNAME", (0, 0), (0, -1), "HaloSans-Bold"),
+                ("FONTNAME", (1, 0), (1, -1), "HaloSans"),
                 ("FONTSIZE", (0, 0), (-1, -1), 8.5),
                 ("LEADING", (0, 0), (-1, -1), 11),
                 ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#c5d2d7")),
@@ -135,6 +152,10 @@ def build_run_pdf(run: dict) -> bytes:
                 "Omega_b",
                 "A_s",
                 "n_s",
+                "Omega_k",
+                "single_z",
+                "z_values",
+                "window_type",
                 "enable_ede",
                 "f_EDE",
                 "log10_a_c",
@@ -148,15 +169,15 @@ def build_run_pdf(run: dict) -> bytes:
         ],
     ]
     parameter_table = Table(
-        parameter_rows, colWidths=[2.2 * inch, 4.3 * inch], repeatRows=1
+        cells(parameter_rows), colWidths=[2.2 * inch, 4.3 * inch], repeatRows=1
     )
     parameter_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#14536d")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9f0f2")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("FONTNAME", (0, 0), (-1, 0), "HaloSans-Bold"),
+                ("FONTNAME", (0, 1), (-1, -1), "HaloSans"),
                 ("FONTSIZE", (0, 0), (-1, -1), 8.3),
                 ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cfdbdf")),
                 (
@@ -183,15 +204,18 @@ def build_run_pdf(run: dict) -> bytes:
             for item in claims
         ]
         claim_table = Table(
-            claim_rows, colWidths=[1.5 * inch, 1.2 * inch, 3.8 * inch], repeatRows=1
+            cells(claim_rows),
+            colWidths=[1.5 * inch, 1.2 * inch, 3.8 * inch],
+            repeatRows=1,
+            splitInRow=1,
         )
         claim_table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#8a5a14")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3eadc")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                    ("FONTNAME", (0, 0), (-1, 0), "HaloSans-Bold"),
+                    ("FONTNAME", (0, 1), (-1, -1), "HaloSans"),
                     ("FONTSIZE", (0, 0), (-1, -1), 7.5),
                     ("LEADING", (0, 0), (-1, -1), 9.5),
                     ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#dbc9ad")),
@@ -229,7 +253,10 @@ def build_run_pdf(run: dict) -> bytes:
         [
             Paragraph("Derived values", subhead),
             Paragraph(
-                "; ".join(f"{key}={value}" for key, value in derived.items())
+                _text(
+                    "; ".join(f"{key}={value}" for key, value in derived.items()),
+                    "No derived values recorded.",
+                )
                 or "No derived values recorded.",
                 small,
             ),

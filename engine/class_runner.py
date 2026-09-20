@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 
 from engine.cosmology import omega_cdm
+from engine.parameter_validation import solver_parameter_errors
+from engine.power_contract import validate_power_arrays
 
 
 class ClassRuntimeError(RuntimeError):
@@ -34,10 +36,25 @@ def _positive_int_env(name: str, default: int, *, minimum: int = 1) -> int:
 def _z_values(params: dict) -> list[float]:
     values = {0.0, float(params.get("single_z", 0.0))}
     values.update(float(z) for z in params.get("z_values", [0.0]))
-    return sorted(z for z in values if z >= 0.0)
+    if any(not np.isfinite(z) or z < 0 for z in values):
+        raise ValueError("CLASS redshifts must be finite and nonnegative")
+    return sorted(values)
+
+
+def _has_ede(params: dict) -> bool:
+    """The exact zero-fraction boundary is ΛCDM, without scalar-field shooting."""
+    if not params.get("enable_ede", False):
+        return False
+    fraction = float(params["f_EDE"])
+    if not np.isfinite(fraction) or fraction < 0:
+        raise ValueError("EDE fraction must be finite and nonnegative")
+    return fraction > 0
 
 
 def build_class_settings(params: dict) -> dict[str, Any]:
+    errors = solver_parameter_errors(params)
+    if errors:
+        raise ValueError("\n".join(errors))
     z_values = _z_values(params)
     settings: dict[str, Any] = {
         "output": "mPk",
@@ -57,7 +74,7 @@ def build_class_settings(params: dict) -> dict[str, Any]:
         "modes": "s",
         "gauge": "synchronous",
     }
-    if params.get("enable_ede", False):
+    if _has_ede(params):
         settings.update(
             {
                 "scf_potential": "axion",
@@ -124,11 +141,7 @@ def _background_omega_m_by_z(
     h0 = float(np.interp(0.0, z_grid, hubble))
     hz = np.interp(redshifts, z_grid, hubble)
     omega_m_z = float(omega_m0) * (1.0 + redshifts) ** 3 / (hz / h0) ** 2
-    if (
-        np.any(~np.isfinite(omega_m_z))
-        or np.any(omega_m_z <= 0)
-        or np.any(omega_m_z > 1.001)
-    ):
+    if np.any(~np.isfinite(omega_m_z)) or np.any(omega_m_z <= 0):
         raise ClassRuntimeError("CLASS background produced an invalid Ωm(z) sequence.")
     return omega_m_z
 
@@ -195,7 +208,7 @@ def _compute_direct(params: dict) -> dict[str, Any]:
                 "Omega_m": float(derived["Omega_m"]),
                 "sigma8": float(derived["sigma8"]),
             },
-            "class_status": "AXICLASS" if params.get("enable_ede") else "CLASS",
+            "class_status": "AXICLASS" if _has_ede(params) else "CLASS",
             "class_settings": settings,
             "classy_path": getattr(classy, "__file__", ""),
             "class_error": "",
@@ -218,7 +231,19 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
     try:
         with np.load(result_path, allow_pickle=False) as data:
             metadata = json.loads(str(data["metadata"].item()))
-            return {
+            if not isinstance(metadata, dict) or any(
+                key in metadata
+                for key in (
+                    "k",
+                    "P",
+                    "P_by_z",
+                    "redshifts",
+                    "growth_class",
+                    "background_omega_m_by_z",
+                )
+            ):
+                raise ValueError("Worker metadata must not redefine scientific arrays")
+            result = {
                 "k": data["k"],
                 "P": data["P"],
                 "P_by_z": data["P_by_z"],
@@ -229,6 +254,8 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
                 else np.asarray([]),
                 **metadata,
             }
+        validate_power_arrays(result)
+        return result
     except ClassRuntimeError:
         raise
     except Exception as exc:
@@ -239,6 +266,9 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
 
 def compute_matter_power(params: dict) -> dict[str, Any]:
     """Run CLASS in a dedicated worker process so native failures cannot kill Streamlit."""
+    errors = solver_parameter_errors(params)
+    if errors:
+        raise ValueError("\n".join(errors))
     loaded_classy = sys.modules.get("classy")
     if loaded_classy is not None and not getattr(loaded_classy, "__file__", None):
         return _compute_direct(params)
@@ -284,6 +314,10 @@ def compute_matter_power(params: dict) -> dict[str, Any]:
             if completed.returncode == 0:
                 try:
                     result = _read_worker_result(result_path)
+                    try:
+                        validate_power_arrays(result, params)
+                    except ValueError as exc:
+                        raise ClassRuntimeError(str(exc)) from exc
                     result["solver_execution"] = {
                         "isolation": "dedicated subprocess worker",
                         "timeout_seconds": timeout,
@@ -357,10 +391,22 @@ def environment_diagnostics() -> dict[str, Any]:
 
 def tiny_class_smoke_test(params: dict) -> dict[str, Any]:
     smoke = dict(params)
-    smoke.update(enable_ede=False, k_min=1e-3, k_max=1.0, k_points=8, z_values=[0.0])
+    smoke.update(
+        enable_ede=False,
+        k_min=1e-3,
+        k_max=1.0,
+        k_points=10,
+        single_z=0.0,
+        z_values=[0.0],
+    )
     try:
         result = compute_matter_power(smoke)
-        value = float(np.interp(0.1, result["k"], result["P"]))
+        index = int(np.argmin(np.abs(result["k"] - 0.1)))
+        if not np.isclose(result["k"][index], 0.1, rtol=1e-12, atol=0):
+            raise ValueError(
+                "The smoke-test output is missing its requested k = 0.1 Mpc^-1 sample"
+            )
+        value = float(result["P"][index])
         return {
             "ok": True,
             "message": f"Real CLASS passed in its isolated worker: P(0.1,0)={value:.6e} Mpc^3",

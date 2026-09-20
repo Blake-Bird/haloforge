@@ -43,7 +43,7 @@ CONCEPTS = (
         "Imagine averaging the universe inside larger and larger spheres: σ(M) tells you how lumpy those averaged regions still are.",
         "For a smoothing radius R, σ²(R)=(2π²)⁻¹∫ dk k²P(k)W²(kR); a top-hat convention maps R to a mass M. σ(M) is dimensionless.",
         "A smooth σ(M) curve can still be incomplete if the sampled k-range misses contributing modes or resolution is inadequate. HaloForge exposes endpoint-removal checks and contribution diagnostics, but labels them sampled-range sensitivity rather than complete solver convergence.",
-        "The engine uses a fixed log-k grid and Simpson integration over the stored solver spectrum. Numerical diagnostics, arrays, and method provenance are saved with each run; array invariants and integration behavior are independently tested.",
+        "The engine uses Simpson integration for smooth windows and a piecewise power-law integral to the sharp-k cutoff, over the stored solver spectrum. Numerical diagnostics, arrays, and method provenance are saved with each run; array invariants and integration behavior are independently tested.",
     ),
     ConceptZoom(
         "σ₈",

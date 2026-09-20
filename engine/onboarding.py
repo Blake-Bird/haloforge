@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import numpy as np
 
 from engine.comparison import compare_at_point
@@ -14,6 +16,15 @@ REVEAL_STAGES = (
     "3 · Smoothed variance",
     "4 · Halo abundance",
 )
+
+
+def guided_parameter_pair(defaults: dict, changes: dict) -> tuple[dict, dict]:
+    """Construct an explicit ΛCDM reference and its controlled candidate."""
+    baseline = deepcopy(defaults)
+    baseline["enable_ede"] = False
+    candidate = deepcopy(baseline)
+    candidate.update(deepcopy(changes))
+    return baseline, candidate
 
 
 def committed_prediction(

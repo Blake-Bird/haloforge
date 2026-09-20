@@ -77,86 +77,135 @@ def _s(sigma):
     return values
 
 
+def _positive_scalar(value, name):
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+    return float(value)
+
+
+def _exp(value):
+    # Cutoff underflow is physical zero; infinite intermediate cutoffs are safe
+    # in log space, where no polynomial prefactor multiplies zero by infinity.
+    with np.errstate(over="ignore", under="ignore"):
+        return np.exp(value)
+
+
+def _log_nu(sigma, delta_c):
+    return np.log(_positive_scalar(delta_c, "Collapse threshold")) - np.log(_s(sigma))
+
+
+def _log_cutoff_form(sigma, A, a, b, c):
+    """ln{A[(b/σ)^a+1] exp(−c/σ²)} without overflowing prefactors."""
+    logs = np.log(_s(sigma))
+    return (
+        np.log(A) + np.logaddexp(a * (np.log(b) - logs), 0) - _exp(np.log(c) - 2 * logs)
+    )
+
+
+def _redshift_factor(z):
+    z = float(z)
+    if not np.isfinite(z) or z < 0:
+        raise ValueError("Redshift must be finite and nonnegative")
+    return 1 + z
+
+
 def nu_from_sigma(sigma, delta_c=1.686):
-    return float(delta_c) / _s(sigma)
+    return _positive_scalar(delta_c, "Collapse threshold") / _s(sigma)
 
 
 def f_press_schechter(sigma, delta_c=1.686, **_):
-    nu = nu_from_sigma(sigma, delta_c)
-    return np.sqrt(2.0 / np.pi) * nu * np.exp(-0.5 * nu**2)
+    lognu = _log_nu(sigma, delta_c)
+    return _exp(0.5 * np.log(2 / np.pi) + lognu - 0.5 * _exp(2 * lognu))
 
 
 def f_sheth_tormen(sigma, delta_c=1.686, A=0.3222, a=0.707, p=0.3, **_):
-    nu = nu_from_sigma(sigma, delta_c)
-    return (
-        A
-        * np.sqrt(2.0 * a / np.pi)
-        * (1.0 + (1.0 / (a * nu**2)) ** p)
-        * nu
-        * np.exp(-0.5 * a * nu**2)
+    A = _positive_scalar(A, "Normalization")
+    a = _positive_scalar(a, "Coefficient a")
+    if not np.isfinite(p):
+        raise ValueError("Coefficient p must be finite")
+    lognu = _log_nu(sigma, delta_c)
+    log_a_nu2 = np.log(a) + 2 * lognu
+    return _exp(
+        np.log(A)
+        + 0.5 * np.log(2 * a / np.pi)
+        + np.logaddexp(0, -p * log_a_nu2)
+        + lognu
+        - 0.5 * _exp(log_a_nu2)
     )
 
 
 def f_jenkins(sigma, **_):
-    s = _s(sigma)
-    return 0.315 * np.exp(-(np.abs(np.log(1.0 / s) + 0.61) ** 3.8))
+    return 0.315 * _exp(-(np.abs(-np.log(_s(sigma)) + 0.61) ** 3.8))
 
 
 def f_reed03(sigma, delta_c=1.686, **_):
     s = _s(sigma)
-    return f_sheth_tormen(s, delta_c) * np.exp(-0.7 / (s * np.cosh(2.0 * s)) ** 5)
+    # Only cosh(2σ), not σ, is raised to the fifth power in Reed03.
+    with np.errstate(over="ignore"):
+        log_cosh = np.logaddexp(2 * s, -2 * s) - np.log(2)
+        correction = _exp(-0.7 * _exp(-np.log(s) - 5 * log_cosh))
+    return f_sheth_tormen(s, delta_c) * correction
 
 
 def f_warren(sigma, **_):
-    s = _s(sigma)
-    return 0.7234 * (s**-1.625 + 0.2538) * np.exp(-1.1982 / s**2)
-
-
-def f_reed07(sigma, delta_c=1.686, neff=-2.0, **_):
-    s = _s(sigma)
-    dc = float(delta_c)
-    a, p, ca, A = 0.707, 0.3, 1.08, 0.3222
-    lninv = np.log(1.0 / s)
-    g1 = np.exp(-((lninv - 0.4) ** 2) / 0.72)
-    g2 = np.exp(-((lninv - 0.75) ** 2) / 0.08)
-    prefactor = A * np.sqrt(2.0 * a / np.pi)
-    bracket = 1.0 + (s**2 / (a * dc**2)) ** p + 0.6 * g1 + 0.4 * g2
-    exponent = (
-        -ca * a * dc**2 / (2.0 * s**2)
-        - 0.03 / (float(neff) + 3.0) ** 2 * (dc / s) ** 0.6
+    logs = np.log(_s(sigma))
+    return _exp(
+        np.log(0.7234)
+        + np.logaddexp(-1.625 * logs, np.log(0.2538))
+        - _exp(np.log(1.1982) - 2 * logs)
     )
-    return prefactor * bracket * (dc / s) * np.exp(exponent)
+
+
+def f_reed07(sigma, delta_c=1.686, neff=None, **_):
+    s = _s(sigma)
+    if neff is None:
+        raise ValueError("Reed 2007 requires the effective spectral slope n_eff")
+    neff = np.asarray(neff, dtype=float)
+    if np.any(~np.isfinite(neff)) or np.any(neff <= -3):
+        raise ValueError("Reed 2007 requires finite n_eff > -3")
+    if neff.ndim and neff.shape != s.shape:
+        raise ValueError("n_eff must be scalar or match the sigma grid")
+    lognu = _log_nu(s, delta_c)
+    a, p, ca, A = 0.764 / 1.08, 0.3, 1.08, 0.3222
+    lninv = -np.log(s)
+    g1 = _exp(-((lninv - 0.4) ** 2) / 0.72)
+    g2 = _exp(-((lninv - 0.75) ** 2) / 0.08)
+    log_bracket = np.logaddexp(
+        np.log1p(0.6 * g1 + 0.4 * g2), -p * (np.log(a) + 2 * lognu)
+    )
+    exponent = -0.5 * _exp(np.log(ca * a) + 2 * lognu) - _exp(
+        np.log(0.03) - 2 * np.log(neff + 3) + 0.6 * lognu
+    )
+    return _exp(
+        np.log(A) + 0.5 * np.log(2 * a / np.pi) + log_bracket + lognu + exponent
+    )
 
 
 def f_tinker08(sigma, z=0.0, delta_halo=200.0, **_):
-    """Tinker08 multiplicity; delta_halo is relative to mean matter density.
+    """Tinker08 multiplicity at bounded overdensity relative to mean density.
 
-    Numerical evaluation outside the redshift calibration is exploratory;
-    this function does not certify a cosmology or sigma range as calibrated.
-    Overdensity extrapolation is never performed.
+    Evaluation outside the redshift calibration remains exploratory.
     """
-    s, zp1, delta = _s(sigma), 1.0 + float(z), float(delta_halo)
+    s, zp1, delta = _s(sigma), _redshift_factor(z), float(delta_halo)
     if not np.isfinite(delta) or not 200 <= delta <= 3200:
         raise ValueError("Tinker 2008 requires 200 ≤ Δmean ≤ 3200")
-    if not np.isfinite(zp1) or zp1 < 1:
-        raise ValueError("Redshift must be finite and nonnegative")
     A0, a0, b0, c = _TINKER_INTERPOLATOR(delta)
-    alpha = 10.0 ** (-((0.75 / np.log10(delta / 75.0)) ** 1.2))
-    A = A0 * zp1**-0.14
-    a = a0 * zp1**-0.06
-    b = b0 * zp1**-alpha
-    return A * ((b / s) ** a + 1.0) * np.exp(-c / s**2)
+    alpha = 10 ** (-((0.75 / np.log10(delta / 75)) ** 1.2))
+    A, a, b = A0 * zp1**-0.14, a0 * zp1**-0.06, b0 * zp1**-alpha
+    return _exp(_log_cutoff_form(s, A, a, b, c))
 
 
 def f_crocce10(sigma, z=0.0, **_):
-    s, zp1 = _s(sigma), 1.0 + float(z)
+    logs, zp1 = np.log(_s(sigma)), _redshift_factor(z)
     A, a, b, c = (
         0.58 * zp1**-0.13,
         1.37 * zp1**-0.15,
         0.30 * zp1**-0.084,
         1.036 * zp1**-0.024,
     )
-    return A * (s**-a + b) * np.exp(-c / s**2)
+    return _exp(
+        np.log(A) + np.logaddexp(-a * logs, np.log(b)) - _exp(np.log(c) - 2 * logs)
+    )
 
 
 def f_courtin10(sigma, delta_c=1.686, **_):
@@ -164,45 +213,56 @@ def f_courtin10(sigma, delta_c=1.686, **_):
 
 
 def f_bhattacharya11(sigma, z=0.0, delta_c=1.686, **_):
-    s, dc, zp1 = _s(sigma), float(delta_c), 1.0 + float(z)
+    lognu, zp1 = _log_nu(sigma, delta_c), _redshift_factor(z)
     A, a, p, q = 0.333 * zp1**-0.11, 0.788 * zp1**-0.01, 0.807, 1.795
-    return (
-        A
-        * np.sqrt(2.0 / np.pi)
-        * np.exp(-a * dc**2 / (2.0 * s**2))
-        * (1.0 + (a * dc**2 / s**2) ** -p)
-        * (dc * np.sqrt(a) / s) ** q
+    log_a_nu2 = np.log(a) + 2 * lognu
+    return _exp(
+        np.log(A)
+        + 0.5 * np.log(2 / np.pi)
+        - 0.5 * _exp(log_a_nu2)
+        + np.logaddexp(0, -p * log_a_nu2)
+        + 0.5 * q * log_a_nu2
     )
 
 
 def f_angulo12(sigma, subhalos=False, **_):
-    s = _s(sigma)
     A, a, b, c = (0.265, 1.9, 1.675, 1.4) if subhalos else (0.201, 1.7, 2.08, 1.172)
-    return A * ((b / s) ** a + 1.0) * np.exp(-c / s**2)
+    return _exp(_log_cutoff_form(sigma, A, a, b, c))
 
 
 def f_watson_fof13(sigma, **_):
-    s = _s(sigma)
-    A, a, b, c = 0.282, 1.406, 2.163, 1.210
-    return A * ((b / s) ** a + 1.0) * np.exp(-c / s**2)
+    return _exp(_log_cutoff_form(sigma, 0.282, 1.406, 2.163, 1.210))
 
 
 def f_watson_so13(sigma, z=0.0, omega_m_z=0.3, delta_halo=200.0, **_):
-    s, z, om, delta = _s(sigma), float(z), float(omega_m_z), float(delta_halo)
-    if z == 0.0:
+    s, zp1 = _s(sigma), _redshift_factor(z)
+    om = _positive_scalar(omega_m_z, "Matter fraction")
+    delta = _positive_scalar(delta_halo, "Halo overdensity")
+    if z == 0:
         A, a, b, c = 0.194, 2.267, 1.805, 1.287
-    elif z >= 6.0:
+    elif z >= 6:
         A, a, b, c = 0.563, 0.874, 3.810, 1.453
     else:
-        A = om * (1.907 * (1.0 + z) ** -3.216 + 0.074)
-        a = om * (3.136 * (1.0 + z) ** -3.058 + 2.349)
-        b = om * (5.907 * (1.0 + z) ** -3.599 + 2.344)
+        A = om * (1.907 * zp1**-3.216 + 0.074)
+        a = om * (3.136 * zp1**-3.058 + 2.349)
+        b = om * (5.907 * zp1**-3.599 + 2.344)
         c = 1.318
-    base = A * ((b / s) ** a + 1.0) * np.exp(-c / s**2)
-    C = np.exp(0.023 * (delta / 178.0 - 1.0))
+    log_base = _log_cutoff_form(s, A, a, b, c)
+    log_C = 0.023 * (delta / 178 - 1)
     d = -0.456 * om - 0.139
-    gamma = C * (delta / 178.0) ** d * np.exp(0.072 * (1.0 - delta / 178.0) / s**2.130)
-    return gamma * base
+    correction = 0.072 * (1 - delta / 178)
+    # Δ<178 diverges at sufficiently small σ outside the empirical domain.
+    # Reject such extrapolations instead of returning NaN or a fabricated zero.
+    with np.errstate(invalid="ignore"):
+        tail = (
+            np.sign(correction) * _exp(np.log(abs(correction)) - 2.130 * np.log(s))
+            if correction
+            else np.zeros_like(s)
+        )
+        result = _exp(log_base + log_C + d * np.log(delta / 178) + tail)
+    if np.any(~np.isfinite(result)):
+        raise FloatingPointError("Watson SO extrapolation exceeds floating-point range")
+    return result
 
 
 _DISPATCH = {

@@ -14,7 +14,7 @@ from engine.windows import window_squared
 
 
 BENCHMARK_VERSION = "haloforge-internal-sigma8-v1"
-CANONICAL_CASES_VERSION = "haloforge-canonical-validation-cases-v1"
+CANONICAL_CASES_VERSION = "haloforge-canonical-validation-cases-v2"
 DEFAULT_RELATIVE_TOLERANCE = 1e-3
 
 
@@ -37,7 +37,7 @@ CANONICAL_VALIDATION_CASES = (
         {"enable_ede": False, "Omega_k": 0.0, "single_z": 0.0},
         "Baseline linear P(k), σ(M), and analytic HMF pipeline.",
         "Internal σ₈ fixed-grid/adaptive agreement at every requested redshift.",
-        "No frozen independent CLASS/CAMB table is bundled yet.",
+        "CI compares one fixed flat ΛCDM cosmology with CAMB 1.6.6; this configuration check does not run that comparison.",
     ),
     CanonicalValidationCase(
         "ede-linear",
@@ -138,7 +138,11 @@ def assess_canonical_case(params: dict, case: CanonicalValidationCase) -> dict:
         "target": case.target,
         "expected_evidence": case.expected_evidence,
         "boundary": case.boundary,
-        "reference_status": "external expected-output reference not yet bundled",
+        "reference_status": (
+            "Fixed ΛCDM CAMB reference tested in CI; not evaluated for this run"
+            if case.identifier in {"lcdm-planck-like", "high-redshift"}
+            else "No external reference evaluated for this case"
+        ),
         "suite_version": CANONICAL_CASES_VERSION,
     }
 
@@ -198,6 +202,8 @@ def internal_sigma8_benchmark(
     This verifies the integration implementation only. It intentionally cannot
     establish agreement with an external Boltzmann code or physical validity.
     """
+    if not np.isfinite(relative_tolerance) or relative_tolerance <= 0:
+        raise ValueError("Benchmark relative tolerance must be finite and positive")
     power = run["power_result"]
     sigma = run["sigma_result"]
     k = np.asarray(power["k"], dtype=float)
@@ -209,11 +215,25 @@ def internal_sigma8_benchmark(
     h = float(power.get("derived", {}).get("h", float(run["params"]["H0"]) / 100.0))
     if (
         p_by_z.ndim != 2
+        or redshifts.ndim != 1
+        or redshifts.size == 0
         or p_by_z.shape[0] != redshifts.size
         or stored.shape != redshifts.shape
     ):
         raise ValueError(
             "The saved P(k,z) and sigma8 arrays are incompatible for benchmarking"
+        )
+    if (
+        not np.isfinite(stored).all()
+        or np.any(stored <= 0)
+        or not np.isfinite(redshifts).all()
+        or np.any(redshifts < 0)
+        or np.any(np.diff(redshifts) <= 0)
+        or not np.isfinite(h)
+        or h <= 0
+    ):
+        raise ValueError(
+            "Benchmark requires positive finite sigma8 and h, and ordered nonnegative redshifts"
         )
     started = perf_counter()
     rows = []

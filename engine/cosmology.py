@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
 from config.constants import (
     NEUTRINO_RADIATION_FACTOR,
     OMEGA_GAMMA_H2_DEFAULT,
@@ -70,8 +72,10 @@ def parse_custom_redshifts(text: str) -> tuple[list[float], list[str]]:
         except ValueError:
             issues.append(f"Could not parse redshift value '{stripped}'.")
             continue
-        if value < 0:
-            issues.append(f"Ignored negative redshift value {value:g}.")
+        if not isfinite(value) or value < 0:
+            issues.append(
+                f"Ignored invalid redshift value '{stripped}'; use a finite, non-negative number."
+            )
             continue
         values.append(value)
     return values, issues

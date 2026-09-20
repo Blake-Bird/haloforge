@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import numpy as np
+from engine.contracts import all_fit_points_checked
 
 
 def uncertainty_inventory(
@@ -21,11 +21,7 @@ def uncertainty_inventory(
     endpoints_ok = all(check.get("status") == "low_sensitivity" for check in endpoint)
     benchmark_rows = (benchmark or {}).get("rows", [])
     benchmark_states = {row.get("status") for row in benchmark_rows}
-    calibration_mask = None if not hmf_validity else hmf_validity.get("calibrated_mask")
-    calibration_ok = bool(
-        calibration_mask is not None
-        and np.all(np.asarray(calibration_mask, dtype=bool))
-    )
+    calibration_ok = all_fit_points_checked(hmf_validity)
     return [
         {
             "source": "Numerical integration",
@@ -64,8 +60,8 @@ def uncertainty_inventory(
         },
         {
             "source": "HMF fit calibration",
-            "state": "supported-at-points" if calibration_ok else "review",
-            "evidence": "All evaluated points pass the selected fit contract."
+            "state": "range-checked" if calibration_ok else "review",
+            "evidence": "All evaluated points pass the implemented fit-range checks; this does not establish simulation calibration for the current cosmology."
             if calibration_ok
             else "At least one point is outside the checked fit contract or could not be checked.",
         },

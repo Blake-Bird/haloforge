@@ -18,6 +18,31 @@ def _validated_curve(x, y) -> tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
+def _interpolate_curve(x, y, points):
+    """Use log-log interpolation on each positive bracket, linear otherwise.
+
+    A zero at the rare-tail endpoint must not change interpolation throughout
+    the positive part of a mass function. Exact stored samples retain their
+    original values, including underflow zeros.
+    """
+    points = np.asarray(points, dtype=float)
+    indices = np.clip(np.searchsorted(x, points, side="right") - 1, 0, x.size - 2)
+    left, right = x[indices], x[indices + 1]
+    low, high = y[indices], y[indices + 1]
+    values = np.interp(points, x, y)
+    positive = (left > 0) & (low > 0) & (high > 0)
+    if np.any(positive):
+        fraction = (np.log(points[positive]) - np.log(left[positive])) / (
+            np.log(right[positive]) - np.log(left[positive])
+        )
+        values[positive] = np.exp(
+            (1 - fraction) * np.log(low[positive]) + fraction * np.log(high[positive])
+        )
+    values = np.where(points == left, low, values)
+    values = np.where(points == right, high, values)
+    return values, positive
+
+
 def sample_curve_at(x, y, point: float) -> dict:
     """Sample inside one stored curve without extrapolating beyond its domain.
 
@@ -38,17 +63,12 @@ def sample_curve_at(x, y, point: float) -> dict:
             "value": float(y[match[0]]),
             "method": "observed stored sample",
         }
-    positive = point > 0 and np.all(x > 0) and np.all(y > 0)
-    value = (
-        np.exp(np.interp(np.log(point), np.log(x), np.log(y)))
-        if positive
-        else np.interp(point, x, y)
-    )
+    values, positive = _interpolate_curve(x, y, np.asarray([point]))
     return {
         "point": point,
-        "value": float(value),
+        "value": float(values[0]),
         "method": "log-log interpolation inside stored domain"
-        if positive
+        if positive[0]
         else "linear interpolation inside stored domain",
     }
 
@@ -63,6 +83,8 @@ def compare_at_point(x, y, bx, by, point: float) -> dict:
             "The baseline value is zero at this point, so a ratio is undefined"
         )
     ratio = candidate["value"] / denominator
+    if not np.isfinite(ratio) or not np.isfinite((ratio - 1) * 100):
+        raise ValueError("The comparison exceeds floating-point range at this point")
     return {
         "point": float(point),
         "candidate_value": candidate["value"],
@@ -89,10 +111,7 @@ def transform_curve(x, y, bx, by, mode):
         raise ValueError(f"Unknown comparison mode: {mode}")
     base = np.full(x.shape, np.nan)
     inside = (x >= bx[0]) & (x <= bx[-1])
-    if np.all(bx > 0) and np.all(np.isfinite(by)) and np.all(by > 0):
-        base[inside] = np.exp(np.interp(np.log(x[inside]), np.log(bx), np.log(by)))
-    else:
-        base[inside] = np.interp(x[inside], bx, by)
+    base[inside], _ = _interpolate_curve(bx, by, x[inside])
     ratio = np.full(x.shape, np.nan)
     valid = np.isfinite(y) & np.isfinite(base) & (base != 0)
     with np.errstate(over="ignore", invalid="ignore"):

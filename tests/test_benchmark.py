@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from config.defaults import DEFAULT_PARAMS
 from engine.benchmark import (
@@ -72,7 +73,7 @@ def test_canonical_case_registry_covers_declared_regimes_without_claiming_extern
     report = assess_canonical_case({**DEFAULT_PARAMS, **case.parameter_overrides}, case)
     assert report["configured"]
     assert report["suite_version"] == CANONICAL_CASES_VERSION
-    assert "not yet bundled" in report["reference_status"]
+    assert "not evaluated for this run" in report["reference_status"]
 
 
 def test_canonical_case_assessment_exposes_configuration_mismatches():
@@ -85,3 +86,22 @@ def test_canonical_case_assessment_exposes_configuration_mismatches():
         "single_z",
     }
     assert len(canonical_case_rows(DEFAULT_PARAMS)) == len(CANONICAL_VALIDATION_CASES)
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf, 0.0, -1.0])
+def test_benchmark_rejects_invalid_saved_sigma8(value):
+    k = np.geomspace(1e-4, 10, 32)
+    power = np.ones_like(k)
+    run = {
+        "params": {"H0": 70},
+        "power_result": {"k": k, "P": power, "redshifts": [0.0]},
+        "sigma_result": {"sigma8_pipeline_by_z": [value]},
+    }
+    with pytest.raises(ValueError, match="positive finite sigma8"):
+        internal_sigma8_benchmark(run)
+
+
+@pytest.mark.parametrize("tolerance", [np.nan, np.inf, 0.0, -0.01])
+def test_benchmark_rejects_invalid_tolerances_before_evaluation(tolerance):
+    with pytest.raises(ValueError, match="tolerance"):
+        internal_sigma8_benchmark({}, relative_tolerance=tolerance)

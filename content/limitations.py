@@ -16,7 +16,7 @@ class Limitation:
     mitigation: str
 
 
-LIMITATIONS_VERSION = "haloforge-known-limitations-v1"
+LIMITATIONS_VERSION = "haloforge-known-limitations-v2"
 
 LIMITATIONS = (
     Limitation(
@@ -24,8 +24,8 @@ LIMITATIONS = (
         "Scientific validation",
         "high",
         "open",
-        "HaloForge does not yet publish independently reproduced CLASS, CAMB, Colossus, hmf, or simulation-reference benchmark tables.",
-        "An internal numerical check cannot establish external solver agreement or scientific accuracy.",
+        "The frozen CAMB reference covers one flat, massless-neutrino ΛCDM cosmology at z = 0, 2, and 10; EDE, curved cosmologies, and empirical HMF calibration lack external reference coverage.",
+        "Agreement in the reference cosmology does not validate other cosmologies or empirical halo abundances.",
         "Use the internal benchmark only as a numerical implementation check; independently reproduce and compare before research use.",
     ),
     Limitation(

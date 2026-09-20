@@ -3,6 +3,10 @@ import numpy as np
 from config.defaults import DEFAULT_PARAMS
 from state import cache
 
+PARAMS = dict(
+    DEFAULT_PARAMS, k_min=0.01, k_max=0.1, k_points=2, z_values=[0.0], single_z=0.0
+)
+
 
 def test_cache_key_stable():
     assert cache.cache_key(DEFAULT_PARAMS) == cache.cache_key(dict(DEFAULT_PARAMS))
@@ -13,13 +17,16 @@ def test_cache_save_load_roundtrip(tmp_path, monkeypatch):
     result = {
         "k": np.array([0.01, 0.1]),
         "P": np.array([10.0, 2.0]),
+        "P_by_z": np.array([[10.0, 2.0]]),
+        "redshifts": np.array([0.0]),
+        "growth_class": np.array([1.0]),
         "derived": {"h": 0.6781, "Omega_m": 0.31, "sigma8": None},
         "class_status": "AXICLASS",
         "warning": "test",
         "class_error": "test",
     }
-    cache.save_cached_power(DEFAULT_PARAMS, result)
-    loaded = cache.load_cached_power(DEFAULT_PARAMS)
+    cache.save_cached_power(PARAMS, result)
+    loaded = cache.load_cached_power(PARAMS)
     assert loaded is not None
     assert loaded["from_cache"] is True
     assert np.allclose(loaded["k"], result["k"])
@@ -32,17 +39,20 @@ def test_cache_checksum_mismatch_is_invalidated(tmp_path, monkeypatch):
     result = {
         "k": np.array([0.01, 0.1]),
         "P": np.array([10.0, 2.0]),
+        "P_by_z": np.array([[10.0, 2.0]]),
+        "redshifts": np.array([0.0]),
+        "growth_class": np.array([1.0]),
         "class_status": "AXICLASS",
         "derived": {"h": 0.6781},
     }
-    path = cache.save_cached_power(DEFAULT_PARAMS, result)
+    path = cache.save_cached_power(PARAMS, result)
     with np.load(path, allow_pickle=False) as data:
         arrays = {key: data[key] for key in data.files if key != "metadata"}
         metadata = data["metadata"]
     arrays["P"] = np.array([11.0, 2.0])
     with path.open("wb") as handle:
         np.savez_compressed(handle, **arrays, metadata=metadata)
-    assert cache.load_cached_power(DEFAULT_PARAMS) is None
+    assert cache.load_cached_power(PARAMS) is None
     assert not path.exists()
 
 

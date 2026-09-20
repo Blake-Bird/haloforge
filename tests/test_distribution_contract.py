@@ -20,6 +20,12 @@ def test_container_builds_the_pinned_axiclass_binding_without_pip_isolation():
     assert "pip install --no-build-isolation ." in dockerfile
 
 
+def test_container_includes_a_browser_runtime_for_promised_static_figure_exports():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "chromium" in dockerfile
+
+
 def test_local_axiclass_setup_uses_the_same_explicit_binding_install_contract():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -73,3 +79,27 @@ def test_pull_request_template_requires_evidence_and_privacy_review():
     assert "calibration" in template
     assert "auto-upload" in template
     assert "private research artifacts" in template
+
+
+def test_ci_runs_the_shipped_image_through_health_and_real_solver_checks():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "docker build --tag haloforge:" in workflow
+    assert "/_stcore/health" in workflow
+    assert "tiny_class_smoke_test(DEFAULT_PARAMS)" in workflow
+    assert "docker build --target test" in workflow
+    assert "python -m pytest -q -p no:cacheprovider" in workflow
+    # Export verification must run before the shell EXIT trap stops the container.
+    shipped_step = workflow.split("- name: Verify the shipped container", 1)[1]
+    shipped_script = shipped_step.split("\n      - name:", 1)[0]
+    assert "static_figure_export_smoke_test" in shipped_script
+    assert "trap cleanup EXIT" in shipped_script
+
+
+def test_streamlit_runtime_disables_usage_statistics_and_ships_configuration():
+    import tomllib
+
+    config = tomllib.loads((ROOT / ".streamlit/config.toml").read_text())
+    assert config["browser"]["gatherUsageStats"] is False
+    assert config["client"]["toolbarMode"] == "minimal"
+    assert "COPY .streamlit ./.streamlit" in (ROOT / "Dockerfile").read_text()

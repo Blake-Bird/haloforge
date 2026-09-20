@@ -12,7 +12,7 @@ from importlib import metadata
 from pathlib import Path
 
 
-SCHEMA_VERSION = "haloforge-run-v2"
+SCHEMA_VERSION = "haloforge-run-v3"
 APP_VERSION = "0.2.0-dev"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,12 +54,49 @@ def _axiclass_commit() -> str:
 
 def _package_versions() -> dict[str, str]:
     result = {}
-    for package in ("streamlit", "plotly", "numpy", "pandas", "scipy", "sympy"):
+    for package in (
+        "streamlit",
+        "plotly",
+        "numpy",
+        "pandas",
+        "scipy",
+        "sympy",
+        "classy",
+        "pyarrow",
+        "reportlab",
+        "pypdf",
+        "kaleido",
+    ):
         try:
             result[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
             result[package] = "unavailable"
     return result
+
+
+def source_tree_sha256(root: Path = PROJECT_ROOT) -> str:
+    """Identify shipped source, including local edits and builds without Git.
+
+    Only application inputs are included: user experiments, caches, tests,
+    and generated artifacts cannot affect or disclose themselves in this hash.
+    Paths and file digests are length-delimited to avoid ambiguous concatenation.
+    """
+    files = [root / "app.py", root / "requirements.txt"]
+    for directory in ("config", "content", "engine", "state", "assets"):
+        files.extend(
+            path
+            for path in (root / directory).rglob("*")
+            if path.is_file() and path.suffix in {".py", ".css", ".svg", ".json"}
+        )
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        if not path.is_file():
+            continue
+        name = path.relative_to(root).as_posix().encode()
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(bytes.fromhex(file_sha256(path)))
+    return digest.hexdigest()
 
 
 def software_provenance() -> dict:
@@ -77,6 +114,7 @@ def software_provenance() -> dict:
         "platform": sys.platform,
         "package_versions": _package_versions(),
         "requirements_sha256": requirements_hash,
+        "source_tree_sha256": source_tree_sha256(),
     }
 
 
@@ -90,6 +128,19 @@ def reproducibility_hash(params: dict, class_settings: dict, provenance: dict) -
         "params": params,
         "class_settings": class_settings,
     }
+    # v1/v2 hashes remain verifiable under their original, narrower identity.
+    if provenance["schema_version"] == "haloforge-run-v3":
+        payload["software"] = {
+            key: provenance.get(key, "unavailable")
+            for key in (
+                "source_tree_sha256",
+                "requirements_sha256",
+                "package_versions",
+                "python",
+                "platform",
+                "image_digest",
+            )
+        }
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), default=str
     ).encode()

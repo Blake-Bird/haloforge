@@ -13,6 +13,7 @@ from config.defaults import DEFAULT_PARAMS
 from engine.contracts import validate_fit_configuration
 from engine.class_runner import ClassRuntimeError, compute_matter_power
 from engine.sigma import compute_sigma_result
+from engine.parameter_validation import solver_parameter_errors
 from state.cache import cache_key, load_cached_power, save_cached_power
 from state.run_model import auto_run_name, create_run_from_current_state
 from state.run_storage import (
@@ -67,6 +68,10 @@ def _run_reference(run: dict) -> dict:
 
 
 def _hydrate_run(run: dict) -> None:
+    if run.get("integrity_status", {}).get("state") == "invalid":
+        raise ValueError(
+            "A saved run with failed integrity checks cannot be loaded for analysis."
+        )
     arrays = run.get("arrays", {})
     params = _merged_params(run.get("params"))
     power_result = {
@@ -106,7 +111,7 @@ def _hydrate_run(run: dict) -> None:
         "rho0": run.get("rho0"),
         "window_type": run.get("window_type", params.get("window_type", "Top-hat")),
         "delta_c": float(params.get("delta_c", 1.686)),
-        "integration_method": "log-k Simpson",
+        "integration_method": run.get("integration_method", "log-k Simpson"),
         "numerical_diagnostics": run.get("numerical_diagnostics", {}),
     }
     st.session_state["params"] = deepcopy(params)
@@ -123,8 +128,17 @@ def _hydrate_run(run: dict) -> None:
 def init_session() -> None:
     if st.session_state.get("haloforge_initialized"):
         return
-    draft = load_draft_params()
-    st.session_state["params"] = _merged_params(draft)
+    st.session_state["draft_recovery_issues"] = []
+    try:
+        draft = load_draft_params()
+        candidate = _merged_params(draft)
+        issues = validate_params(candidate) if draft is not None else []
+    except (ValueError, TypeError, OverflowError) as exc:
+        candidate, issues = _merged_params(None), [str(exc)]
+    if issues:
+        st.session_state["draft_recovery_issues"] = issues
+        candidate = _merged_params(None)
+    st.session_state["params"] = candidate
     st.session_state["completed_params"] = None
     st.session_state["matter_power_result"] = None
     st.session_state["matter_power_cache_key"] = None
@@ -140,8 +154,18 @@ def init_session() -> None:
     runs = st.session_state["saved_runs"]
     target_id = get_last_run_id()
     target = load_run(target_id) if target_id else None
-    if target is None and runs:
-        target = runs[-1]
+    usable = [
+        run
+        for run in runs
+        if run.get("arrays")
+        and run.get("integrity_status", {}).get("state") != "invalid"
+    ]
+    if (
+        target is None
+        or not target.get("arrays")
+        or target.get("integrity_status", {}).get("state") == "invalid"
+    ):
+        target = usable[-1] if usable else None
     if target is not None and target.get("arrays"):
         _hydrate_run(target)
 
@@ -180,12 +204,14 @@ def clear_loaded_run() -> None:
 
 
 def validate_params(params: dict) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = solver_parameter_errors(params)
 
     def numeric(key: str) -> float | None:
         try:
+            if isinstance(params[key], bool):
+                raise ValueError
             value = float(params[key])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             errors.append(f"{key} must be a finite numeric value.")
             return None
         if not np.isfinite(value):
@@ -193,6 +219,29 @@ def validate_params(params: dict) -> list[str]:
             return None
         return value
 
+    for key in ("delta_c", "delta_halo"):
+        value = numeric(key)
+        if value is not None and value <= 0:
+            errors.append(f"{key} must be positive.")
+    batch = numeric("quad_limit")
+    if batch is not None and (not batch.is_integer() or batch < 1):
+        errors.append("quad_limit must be a positive integer batch size.")
+    if params.get("window_type") not in {"Top-hat", "Gaussian", "Sharp-k"}:
+        errors.append("Choose a supported window: Top-hat, Gaussian, or Sharp-k.")
+    epoch = numeric("log10_a_c")
+    if epoch is not None:
+        try:
+            scale = 10.0**epoch
+            valid_epoch = 0 < scale <= 1 and np.isfinite(1 / scale)
+        except (OverflowError, ZeroDivisionError):
+            valid_epoch = False
+        if not valid_epoch:
+            errors.append(
+                "log10_a_c must give a positive scale factor no later than today and a finite critical redshift."
+            )
+    index = numeric("n_EDE")
+    if index is not None and (not index.is_integer() or index < 1):
+        errors.append("n_EDE must be a positive integer.")
     delta_halo = numeric("delta_halo")
     omega_b, omega_m = numeric("Omega_b"), numeric("Omega_m")
     k_min, k_max = numeric("k_min"), numeric("k_max")
@@ -250,7 +299,7 @@ def validate_params(params: dict) -> list[str]:
         errors.append("Redshifts must be non-negative.")
     if params.get("enable_ede") and (f_ede is None or not 0.0 <= f_ede <= 0.3):
         errors.append("f_EDE must lie between 0 and 0.3.")
-    return errors
+    return list(dict.fromkeys(errors))
 
 
 def _comparison_payload(params: dict) -> str:

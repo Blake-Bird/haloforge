@@ -260,3 +260,46 @@ def test_saved_run_integrity_detects_modified_calculation_identity(
     loaded = run_storage.load_run("integrity-test")
     assert loaded["integrity_status"]["state"] == "invalid"
     assert "will not hydrate" in loaded["storage_warning"]
+
+
+def test_damaged_run_cannot_be_rechecksummed_by_mutations(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(run_storage, "RUN_DIR", tmp_path / "saved_runs")
+    monkeypatch.setattr(run_storage, "EXPORT_DIR", tmp_path / "exports")
+    run = {
+        "run_id": "damaged",
+        "name": "Original",
+        "arrays": {"P": np.array([1.0, 2.0])},
+    }
+    run_storage.save_run(run)
+    path = run_storage.RUN_DIR / "damaged.npz"
+    np.savez(path, P=np.array([9.0, 9.0]))
+    originals = {p: p.read_bytes() for p in run_storage.RUN_DIR.iterdir()}
+    loaded = run_storage.load_run("damaged")
+    assert loaded["integrity_status"]["state"] == "invalid"
+    for action in (
+        lambda: run_storage.save_run(loaded),
+        lambda: run_storage.save_run(run),  # stale caller has no invalid flag
+        lambda: run_storage.generate_run_exports(loaded),
+        lambda: run_storage.rename_run("damaged", "Renamed"),
+        lambda: run_storage.duplicate_run("damaged"),
+        lambda: run_storage.update_run_metadata(
+            {"run_id": "damaged", "notes": "New note"}
+        ),
+        lambda: run_storage.set_baseline("damaged"),
+    ):
+        with pytest.raises(ValueError, match="integrity|damaged"):
+            action()
+        assert {p: p.read_bytes() for p in run_storage.RUN_DIR.iterdir()} == originals
+        assert not (run_storage.EXPORT_DIR / "damaged").exists()
+    healthy = {
+        "run_id": "healthy",
+        "name": "Healthy",
+        "arrays": {"P": np.array([1.0, 2.0])},
+    }
+    run_storage.save_run(healthy)
+    run_storage.set_baseline("healthy")
+    assert run_storage.load_run("healthy")["is_baseline"]
+    assert path.read_bytes() == originals[path]
+    assert run_storage.load_run("damaged")["integrity_status"]["state"] == "invalid"

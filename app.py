@@ -26,6 +26,7 @@ from engine.class_runner import (
 from engine.cosmology import derived_quantities
 from engine.comparison import compare_at_point, transform_curve
 from engine.onboarding import (
+    guided_parameter_pair,
     CLUSTER_MASS_HINV_MSUN,
     REVEAL_STAGES,
     committed_prediction,
@@ -35,6 +36,7 @@ from engine.onboarding import (
 from engine.fitting_functions import FITTING_NAMES, FIT_METADATA, fitting_values
 from engine.contracts import MASS_DEFINITIONS, fit_contract
 from engine.hmf import cumulative_hmf, hmf_z
+from engine.redshift import redshift_index
 from engine.sigma import sigma_grid, sigma_integrand_per_logk
 from engine.windows import top_hat_W_exact, top_hat_W_series, window_W, window_squared
 from engine.explanations import explain_change
@@ -52,7 +54,7 @@ from engine.benchmark import (
     internal_sigma8_benchmark,
 )
 from engine.performance import PERFORMANCE_BENCHMARK_VERSION, profile_core_pipeline
-from engine.figure_recipes import RECIPES, apply_figure_recipe
+from engine.figure_recipes import RECIPES, apply_figure_recipe, apply_chart_theme
 from engine.uncertainty import uncertainty_inventory
 from engine.experiment_design import PLANS, design_experiment
 from engine.plot_insights import (
@@ -368,7 +370,7 @@ GRAPH_CAPTIONS = {
     "Growth": "Independent CLASS growth and the σ₈ ratio should track each other when the finite k integral is converged.",
     "Multiplicity f(σ)": "Collapse prescriptions and simulation-calibrated fits map fluctuation rarity into halo multiplicity.",
     "HMF": "Differential halo abundance per logarithmic mass interval in h³ Mpc⁻³.",
-    "Cumulative HMF": "Number density of halos above mass M, integrated from the differential HMF.",
+    "Cumulative HMF": "Number density between M and the largest sampled mass. Positive intervals use exact integration of a power-law interpolant; intervals touching zero use linear integration in ln M.",
 }
 
 GRAPH_LIMITS = {
@@ -560,6 +562,7 @@ def chart(
                 "Share card": "Square composition for an honest, caveat-carrying card.",
             }[recipe]
         )
+    apply_chart_theme(fig, st.session_state.get("hf_theme", "Dark"))
     apply_figure_recipe(fig, recipe)
 
     if axis_controls and key:
@@ -681,12 +684,15 @@ def info_label(key: str, title: str | None = None) -> None:
 def slider(key: str, title: str | None = None) -> None:
     spec = CONTROL_RANGES[key]
     info_label(key, title)
+    value = float(params.get(key, spec["default"]))
+    integral = isinstance(spec["default"], int) and value.is_integer()
+    cast = int if integral else float
     kwargs = dict(
         label=title or key,
-        min_value=spec["min"],
-        max_value=spec["max"],
-        value=params.get(key, spec["default"]),
-        step=spec["step"],
+        min_value=cast(min(spec["min"], value)),
+        max_value=cast(max(spec["max"], value)),
+        value=cast(value),
+        step=cast(spec["step"]),
         label_visibility="collapsed",
         key=f"hf_{key}",
     )
@@ -708,7 +714,7 @@ def apply_accessibility_preferences() -> None:
     styles = []
     if theme == "Light":
         styles.append("""
-        :root{--ink:#f7f8f6;--panel:#ffffff;--panel2:#f0f3f2;--line:#b7c2c3;--paper:#132126;--muted:#42545a;--cyan:#006f7a;--amber:#8a4b00;--rose:#ae1742;--green:#087543}
+        html:root{--ink:#f7f8f6;--panel:#ffffff;--panel2:#f0f3f2;--line:#b7c2c3;--paper:#132126;--muted:#42545a;--cyan:#006f7a;--amber:#8a4b00;--rose:#ae1742;--green:#087543}
         [data-testid="stAppViewContainer"]{background-image:none!important}
         [data-testid="stSidebar"]{background:#edf2f1!important}
         [data-testid="stHeader"]{background:rgba(247,248,246,.9)!important}
@@ -718,7 +724,7 @@ def apply_accessibility_preferences() -> None:
         """)
     elif theme == "High contrast":
         styles.append("""
-        :root{--ink:#000;--panel:#000;--panel2:#000;--line:#fff;--paper:#fff;--muted:#fff;--cyan:#00ffff;--amber:#ffff00;--rose:#ff75a6;--green:#5cff94}
+        html:root{--ink:#000;--panel:#000;--panel2:#000;--line:#fff;--paper:#fff;--muted:#fff;--cyan:#00ffff;--amber:#ffff00;--rose:#ff75a6;--green:#5cff94}
         [data-testid="stAppViewContainer"]{background-image:none!important}.hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#000!important;border-color:#fff!important}
         .hero h1,.page-head h2,.empty b{color:#fff!important}.stButton>button{border-color:#fff!important}.stButton>button[kind="primary"]{background:#00ffff!important;color:#000!important}
         """)
@@ -818,6 +824,17 @@ def sidebar() -> str:
             '<div class="brand"><i></i><div><b>HALOFORGE</b><small>AXICLASS STRUCTURE LAB</small></div></div>',
             unsafe_allow_html=True,
         )
+        recovery_issues = st.session_state.get("draft_recovery_issues", [])
+        if recovery_issues:
+            st.warning(
+                "The saved draft could not be restored. Default controls or the last valid run were loaded. Recovery left the draft file unchanged."
+            )
+            with st.expander("Draft recovery details"):
+                for issue in recovery_issues:
+                    st.write(issue)
+                if st.button("Dismiss recovery notice"):
+                    st.session_state["draft_recovery_issues"] = []
+                    st.rerun()
         with st.popover("Display & accessibility"):
             st.selectbox(
                 "Color mode", ["Dark", "Light", "High contrast"], key="hf_theme"
@@ -853,7 +870,7 @@ def sidebar() -> str:
         )
         if mode == "Explore":
             st.caption(
-                "Start with one question. Advanced controls stay out of the way until you choose to investigate."
+                "Explore guided experiments, compare saved runs, or open the full research workspace."
             )
             return "Explore"
         if mode == "Compare":
@@ -931,7 +948,7 @@ def sidebar() -> str:
                 slider("log10_a_c")
                 params["n_EDE"] = st.select_slider(
                     "Potential index n",
-                    options=[2, 3, 4, 5, 6],
+                    options=sorted({2, 3, 4, 5, 6, int(params.get("n_EDE", 3))}),
                     value=int(params.get("n_EDE", 3)),
                     key="hf_n_EDE",
                 )
@@ -973,8 +990,8 @@ def sidebar() -> str:
                 slider("single_z")
                 params["delta_halo"] = st.number_input(
                     "Halo overdensity Δ relative to mean matter density",
-                    75.1,
-                    3200.0,
+                    min(75.1, float(params.get("delta_halo", 200.0))),
+                    max(3200.0, float(params.get("delta_halo", 200.0))),
                     float(params.get("delta_halo", 200.0)),
                     1.0,
                     key="hf_delta_halo",
@@ -989,7 +1006,7 @@ def sidebar() -> str:
                 slider("k_points")
                 slider("quad_limit", "Integration batch size")
                 st.caption(
-                    "σ(M) now uses the complete sampled log-k grid with Simpson integration. This removes adaptive-integrator instability."
+                    "Top-hat and Gaussian variance use Simpson integration in ln k. Sharp-k integrates to the exact cutoff, k = 1/R."
                 )
             with st.expander("Research intent", expanded=False):
                 st.caption(
@@ -1012,7 +1029,7 @@ def sidebar() -> str:
                 )
             selected_z = st.multiselect(
                 "Redshifts sent to CLASS",
-                [0, 0.5, 1, 2, 5, 10, 100],
+                sorted({0, 0.5, 1, 2, 5, 10, 100, *params.get("z_values", [])}),
                 default=params.get("z_values", [0, 0.5, 1, 2, 5, 10, 100]),
                 key="hf_z_values",
             )
@@ -1105,8 +1122,8 @@ GUIDED_EXPERIMENTS = {
     "Early expansion": {
         "name": "Guided EDE experiment",
         "params": {"enable_ede": True, "f_EDE": 0.12, "log10_a_c": -3.5},
-        "question": "Could a brief faster early expansion change which galaxy clusters can exist?",
-        "description": "Turn on a temporary early-dark-energy pulse near the structure-forming era. Everything else stays Planck-like.",
+        "question": "How does early dark energy change cluster abundance?",
+        "description": "Add early dark energy near matter–radiation equality. Keep the other cosmological parameters fixed.",
         "prediction": "If early expansion briefly speeds up, what do you expect for very massive halos?",
         "choices": ["More massive halos", "Fewer massive halos", "I am not sure yet"],
         "expected": "Expect a causal chain from the early background to P(k), σ(M), then model-dependent halo counts.",
@@ -1141,8 +1158,10 @@ GUIDED_EXPERIMENTS = {
 
 def _choose_onboarding_universe(experiment: dict) -> None:
     """Stage one safe, meaningful experiment without exposing the control panel."""
-    params.update(deepcopy(DEFAULT_PARAMS))
-    params.update(experiment["params"])
+    baseline, candidate = guided_parameter_pair(DEFAULT_PARAMS, experiment["params"])
+    params.clear()
+    params.update(candidate)
+    st.session_state["onboarding_baseline_params"] = baseline
     st.session_state["run_name_draft"] = experiment["name"]
     st.session_state.pop("onboarding_finished_run", None)
     st.session_state.pop("onboarding_outcome", None)
@@ -1168,15 +1187,20 @@ def _guided_cluster_outcome(
     return outcome
 
 
-def causal_reveal_visual(stage: int) -> None:
+def causal_reveal_visual(stage: int, experiment_name: str = "Early expansion") -> None:
     """Render the guided causal chain as optional motion with a static reading order.
 
     The labels and arrows intentionally carry the explanation without relying on
     animation.  CSS honors both the app's Reduce motion setting and the operating
     system preference, leaving the same causal map visible in either mode.
     """
+    input_label = {
+        "Early expansion": "Early dark energy",
+        "More small-scale power": "Primordial tilt",
+        "Why kmax matters": "Fourier coverage",
+    }[experiment_name]
     labels = (
-        ("EARLY CONDITION", "Temporary EDE pulse", "The changed input"),
+        ("CHANGED INPUT", input_label, "The controlled change"),
         ("MATTER POWER", "P(k) is processed", "First calculated consequence"),
         ("SMOOTHING", "σ(M) gathers modes", "Scale becomes halo mass"),
         ("HALO ABUNDANCE", "dn/dlnM responds", "Fit-dependent prediction"),
@@ -1199,19 +1223,33 @@ def causal_reveal_visual(stage: int) -> None:
     )
 
 
+def _reset_guided_experiment() -> None:
+    for key in (
+        "onboarding_ready",
+        "onboarding_finished_run",
+        "onboarding_outcome",
+        "onboarding_baseline_params",
+        "onboarding_reveal_stage",
+    ):
+        st.session_state.pop(key, None)
+
+
 def explore_view():
     experiment_name = st.selectbox(
-        "Curated experiment", list(GUIDED_EXPERIMENTS), key="guided_experiment"
+        "Curated experiment",
+        list(GUIDED_EXPERIMENTS),
+        key="guided_experiment",
+        on_change=_reset_guided_experiment,
     )
     experiment = GUIDED_EXPERIMENTS[experiment_name]
     st.markdown(
-        '<div class="page-head"><span>ONE QUESTION · ONE CAUSAL CHAIN</span>'
+        '<div class="page-head"><span>GUIDED EXPERIMENT</span>'
         f"<h2>{experiment['question']}</h2>"
-        "<p>Make a prediction first. HaloForge will then follow the consequence from the infant universe to halo abundance—and mark where confidence ends.</p></div>",
+        "<p>Predict the effect, then compare matter power, mass variance, and modelled halo abundance.</p></div>",
         unsafe_allow_html=True,
     )
     st.info(
-        "You do not need to know k, σ(M), or EDE yet. This guided experiment changes one physical idea and keeps the rest of the baseline settings fixed."
+        "Each experiment compares two calculations. Explanations below introduce the physics and its limits."
     )
     prediction = st.radio(
         "Before calculating: " + experiment["prediction"],
@@ -1222,9 +1260,7 @@ def explore_view():
     )
     prediction_ready = prediction in experiment["choices"]
     if not prediction_ready:
-        st.caption(
-            "Choose the outcome you currently expect. “I am not sure yet” is a complete and useful prediction."
-        )
+        st.caption("Choose a prediction to set up the comparison.")
     left, right = st.columns([1.25, 1])
     with left:
         st.markdown("#### Make one change")
@@ -1258,10 +1294,12 @@ def explore_view():
             try:
                 prediction = committed_prediction(prediction, experiment["choices"])
                 with st.spinner(
-                    "Preparing a matched Planck-like baseline, then following the one changed early-universe condition into matter power, smoothing, and halo counts…"
+                    "Calculating the ΛCDM baseline and candidate with AxiCLASS…"
                 ):
                     params.clear()
-                    params.update(deepcopy(DEFAULT_PARAMS))
+                    params.update(
+                        deepcopy(st.session_state["onboarding_baseline_params"])
+                    )
                     save_draft_params(params)
                     baseline_result = run_new_cosmology(
                         "Guided Planck-like baseline",
@@ -1297,6 +1335,9 @@ def explore_view():
                     "run_id"
                 ]
                 st.session_state["onboarding_outcome"] = outcome
+                st.session_state["onboarding_baseline_id"] = baseline_result[
+                    "saved_run"
+                ]["run_id"]
                 st.session_state["onboarding_ready"] = False
                 st.rerun()
             except (ClassRuntimeError, ValueError) as exc:
@@ -1320,10 +1361,9 @@ def explore_view():
         st.markdown("### The reveal")
         outcome = st.session_state.get("onboarding_outcome")
         if outcome:
-            direction = "more" if outcome["percent_difference"] > 0 else "fewer"
             st.markdown(
-                f"You just changed the modeled abundance of **10¹⁴ h⁻¹ M☉ halos** by "
-                f"**{abs(outcome['percent_difference']):.2f}% {direction}** at z = 0, compared with the matched guided baseline."
+                f"Modelled abundance at **10¹⁴ h⁻¹ M☉**, z = 0: "
+                f"**{outcome['percent_difference']:+.2f}%** relative to the matched ΛCDM baseline."
             )
             st.caption(
                 f"{outcome['candidate_method']} versus {outcome['baseline_method']} · "
@@ -1342,8 +1382,10 @@ def explore_view():
         )
         reveal_stage(reveal_index)
         pipeline = current_pipeline_run()
-        causal_steps = explain_change(DEFAULT_PARAMS, params)
-        causal_reveal_visual(reveal_index)
+        causal_steps = explain_change(
+            st.session_state["onboarding_baseline_params"], params
+        )
+        causal_reveal_visual(reveal_index, experiment_name)
         if reveal_index == 0:
             st.markdown(
                 '<div class="lesson-card compact"><span>EARLY CONDITION</span><h3>One early-universe change</h3><p>The guided candidate differs from the matched baseline only in the selected experiment settings. HaloForge keeps the rest of the staged baseline settings fixed so the following plots can be read as a controlled comparison.</p><b>Start with the physical condition—not with a graph.</b></div>',
@@ -1407,7 +1449,16 @@ def explore_view():
             "Compare: use a baseline",
             key="onboarding_compare",
             on_click=lambda: st.session_state.update(
-                {"onboarding_route": "Compare lab"}
+                {
+                    "onboarding_route": "Compare lab",
+                    "compare_run_ids": [
+                        st.session_state["onboarding_baseline_id"],
+                        st.session_state["onboarding_finished_run"],
+                    ],
+                    "compare_baseline_id": st.session_state["onboarding_baseline_id"],
+                    "compare_mode": "Percent difference",
+                    "compare_panel_count": "1",
+                }
             ),
         )
         routes[2].button(
@@ -1686,8 +1737,7 @@ def notebook_view():
 
 
 def z_index(redshifts, z):
-    arr = np.asarray(redshifts, float)
-    return int(np.argmin(np.abs(arr - float(z))))
+    return redshift_index(redshifts, z)
 
 
 def primordial_fig(p):
@@ -1977,6 +2027,8 @@ def multiplicity_fig(p, fits=None):
                 name,
                 z=p["single_z"],
                 delta_halo=p.get("delta_halo", 200),
+                neff=-2.0,
+                omega_m_z=0.3,
             )
         except (ValueError, FloatingPointError) as exc:
             st.warning(f"{name} was not plotted: {exc}")
@@ -1985,7 +2037,13 @@ def multiplicity_fig(p, fits=None):
             go.Scatter(
                 x=s,
                 y=y,
-                name=name,
+                name=(
+                    name + " (n_eff = −2 reference)"
+                    if name == "Reed 2007"
+                    else name + " (Ωm(z) = 0.3 reference)"
+                    if name == "Watson SO 2013"
+                    else name
+                ),
                 line=dict(color=COLORS[i % len(COLORS)], width=2.5),
                 hovertemplate="σ=%{x:.4f}<br>f(σ)=%{y:.4e}<extra></extra>",
             )
@@ -2027,6 +2085,8 @@ def hmf_fig(run, fits=None, redshifts=None, cumulative=False):
             color = COLORS[n % len(COLORS)]
             name = f"{fit} · z={float(z):g}"
             valid = np.asarray(r["validity"]["calibrated_mask"], dtype=bool)
+            if cumulative:
+                valid = np.logical_and.accumulate(valid[::-1])[::-1]
             valid_y = np.where(valid, y, np.nan)
             f.add_trace(
                 go.Scatter(
@@ -2067,7 +2127,8 @@ def hmf_fig(run, fits=None, redshifts=None, cumulative=False):
         annotation_position="top left",
     )
     f.update_yaxes(
-        type="log", title="n(>M) [h³ Mpc⁻³]" if cumulative else "dn/dlnM [h³ Mpc⁻³]"
+        type="log",
+        title="n(M < m < Mmax) [h³ Mpc⁻³]" if cumulative else "dn/dlnM [h³ Mpc⁻³]",
     )
     key = "Cumulative HMF" if cumulative else "HMF"
     caption = (
@@ -2191,7 +2252,8 @@ def dashboard_view():
         )
         with st.expander("Inspect selected halo scale", expanded=True):
             st.caption(
-                "This synchronizes the selected mass across smoothing, variance, and fit-validity context. It reports sampled-mode contribution, not a convergence proof."
+                f"Nearest saved mass to {point['requested_mass_hinv_msun']:.4g} h⁻¹ M☉. "
+                "Values below describe that saved sample; no mass interpolation is applied."
             )
             st.dataframe(
                 pd.DataFrame(
@@ -2204,11 +2266,11 @@ def dashboard_view():
                             "σ(M)": point["sigma"],
                             "peak height ν": point["nu"],
                             "central sampled k band [Mpc⁻¹]": f"{point['k_10_mpc_inv']:.3g}–{point['k_90_mpc_inv']:.3g}",
-                            "fit calibrated at this mass": "yes"
-                            if point["calibrated_at_mass"]
+                            "passes implemented fit checks": "yes"
+                            if point["fit_checks_pass_at_mass"]
                             else (
                                 "no"
-                                if point["calibrated_at_mass"] is False
+                                if point["fit_checks_pass_at_mass"] is False
                                 else "not checked"
                             ),
                         }
@@ -2216,6 +2278,14 @@ def dashboard_view():
                 ),
                 width="stretch",
                 hide_index=True,
+                column_config={
+                    "mass [h⁻¹ M☉]": st.column_config.NumberColumn(format="%.4e"),
+                    "physical mass [M☉]": st.column_config.NumberColumn(format="%.4e"),
+                    "radius [Mpc]": st.column_config.NumberColumn(format="%.4g"),
+                    "redshift": st.column_config.NumberColumn(format="%.4g"),
+                    "σ(M)": st.column_config.NumberColumn(format="%.5g"),
+                    "peak height ν": st.column_config.NumberColumn(format="%.5g"),
+                },
             )
             st.caption(point["scope_limit"])
     except (ValueError, FloatingPointError, KeyError):
@@ -2410,7 +2480,7 @@ def _metric_axis(metric):
         "σ(M)": ("M [h⁻¹ M☉]", "σ(M,z)"),
         "σ slope": ("M [h⁻¹ M☉]", "|d lnσ/d lnM|"),
         "HMF": ("M [h⁻¹ M☉]", "dn/dlnM [h³ Mpc⁻³]"),
-        "Cumulative HMF": ("M [h⁻¹ M☉]", "n(>M) [h³ Mpc⁻³]"),
+        "Cumulative HMF": ("M [h⁻¹ M☉]", "n(M < m < Mmax) [h³ Mpc⁻³]"),
     }[metric]
 
 
@@ -2428,6 +2498,7 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
             a = saved["arrays"]
             relevant_fits = fits if metric in {"HMF", "Cumulative HMF"} else [""]
             for fit in relevant_fits:
+                calibrated = None
                 if metric == "P(k)":
                     x, y = a["k"], a["P_by_z"][z_index(a.get("redshifts", [0]), z)]
                 elif metric == "Δ²(k)":
@@ -2460,6 +2531,11 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
                         if metric == "Cumulative HMF"
                         else r["hmf"]
                     )
+                    calibrated = np.asarray(
+                        r["validity"]["calibrated_mask"], dtype=bool
+                    )
+                    if metric == "Cumulative HMF":
+                        calibrated = np.logical_and.accumulate(calibrated[::-1])[::-1]
                 curves.append(
                     {
                         "saved": saved,
@@ -2467,6 +2543,7 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
                         "fit": fit,
                         "x": np.asarray(x),
                         "y": np.asarray(y),
+                        "calibrated": calibrated,
                     }
                 )
     if not curves:
@@ -2495,10 +2572,24 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
             windows.index(curve["window"]) if curve["window"] in windows else 0
         ) + (fits.index(curve["fit"]) if curve["fit"] in fits else 0)
         dash = ["solid", "dash", "dot", "dashdot"][variant_index % 4]
+        calibrated = curve["calibrated"]
+        if calibrated is not None:
+            calibrated = calibrated.copy()
+            if mode != "Overlay":
+                calibrated &= (
+                    np.interp(
+                        curve["x"],
+                        base["x"],
+                        base["calibrated"].astype(float),
+                        left=0,
+                        right=0,
+                    )
+                    == 1
+                )
         f.add_trace(
             go.Scatter(
                 x=curve["x"],
-                y=yy,
+                y=yy if calibrated is None else np.where(calibrated, yy, np.nan),
                 name=saved["name"] + suffix,
                 line=dict(
                     color=saved.get("color", COLORS[i % len(COLORS)]),
@@ -2509,6 +2600,20 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
                 hovertemplate="x=%{x:.4e}<br>y=%{y:.4e}<extra></extra>",
             )
         )
+        if calibrated is not None and not np.all(calibrated):
+            f.add_trace(
+                go.Scatter(
+                    x=curve["x"],
+                    y=np.where(calibrated, np.nan, yy),
+                    name=saved["name"] + suffix + " · outside calibration",
+                    line=dict(
+                        color=saved.get("color", COLORS[i % len(COLORS)]),
+                        width=2.5,
+                        dash="dot",
+                    ),
+                    hovertemplate="x=%{x:.4e}<br>y=%{y:.4e}<br>outside calibration<extra></extra>",
+                )
+            )
         if mode != "Overlay" and saved["run_id"] != baseline["run_id"]:
             point = largest_deviation_point(
                 curve["x"], yy, reference=1.0 if mode == "Ratio" else 0.0
@@ -2537,12 +2642,12 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
         vals = _trace_values(f, "y")
         vals = vals[np.isfinite(vals)]
         if vals.size:
-            extent = max(float(np.nanpercentile(np.abs(vals), 99)), 1e-4)
+            extent = max(float(np.max(np.abs(vals))), 1e-4)
             f.update_yaxes(range=[-1.15 * extent, 1.15 * extent])
     if largest:
         point = largest["point"]
         f.add_annotation(
-            x=point["x"],
+            x=np.log10(point["x"]) if logx else point["x"],
             y=point["value"],
             text=f"largest sampled deviation<br>{largest['name']}",
             showarrow=True,
@@ -2572,7 +2677,13 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
                 annotation_text="sampled crossing bracket",
                 annotation_position="top left",
             )
-    caption = f"{mode} at z={z:g}. Baseline: {baseline['name']}. Comparisons match the window and HMF fit. Ratios are shown only within the baseline's sampled range and where its value is nonzero; gaps indicate undefined comparisons. Amber bands mark only stored sample brackets where a comparison changes side of its reference—not an interpolated crossing point. Cumulative counts stop at each run's maximum sampled mass, which must match for a controlled comparison."
+    caption = f"{mode} · z = {z:g} · reference: {baseline['name']}. Gaps indicate undefined comparisons."
+    if metric in {"HMF", "Cumulative HMF"}:
+        caption += " Dotted segments include points outside fit calibration."
+    if metric == "Cumulative HMF":
+        caption += (
+            " Counts end at each run's Mmax; match upper mass limits before comparing."
+        )
     return set_plot(f, metric, caption)
 
 
@@ -2625,14 +2736,14 @@ def _point_comparison_curve(
 def compare_view():
     st.markdown(
         '<div class="page-head"><span>COMPARE LAB</span>'
-        "<h2>Make subtle physics impossible to miss.</h2>"
+        "<h2>Compare cosmologies</h2>"
         "<p>Overlay is the default. Ratios and residuals use a matching "
         "baseline curve for every window and fitting-function combination.</p>"
         "</div>",
         unsafe_allow_html=True,
     )
 
-    runs = load_all_runs()
+    runs = analysis_runs()
 
     if len(runs) < 2:
         st.info(
@@ -2748,10 +2859,11 @@ def compare_view():
         **redshift_kwargs,
     )
 
+    panel_kwargs = {} if "compare_panel_count" in st.session_state else {"default": "2"}
     ncol = c[3].segmented_control(
         "Panels",
         ["1", "2", "3"],
-        default="2",
+        **panel_kwargs,
         key="compare_panel_count",
     )
 
@@ -2816,12 +2928,15 @@ def compare_view():
             point_metric = point_columns[0].selectbox(
                 "Observable", metrics or COMPARE_METRICS, key="point_compare_metric"
             )
-            point_candidate = point_columns[1].selectbox(
+            candidate_ids = [str(run["run_id"]) for run in candidates]
+            _prepare_scalar_widget_state("point_compare_candidate_id", candidate_ids)
+            point_candidate_id = point_columns[1].selectbox(
                 "Candidate",
-                candidates,
-                format_func=lambda run: run["name"],
-                key="point_compare_candidate",
+                candidate_ids,
+                format_func=lambda run_id: run_map[run_id]["name"],
+                key="point_compare_candidate_id",
             )
+            point_candidate = run_map[point_candidate_id]
             point_window = windows[0] if windows else baseline["params"]["window_type"]
             point_fit = fits[0] if fits else baseline["params"]["fitting"]
             if point_metric in {"σ(M)", "σ slope", "HMF", "Cumulative HMF"}:
@@ -2957,12 +3072,28 @@ def compare_view():
                 )
 
 
+def analysis_runs() -> list[dict]:
+    runs = load_all_runs()
+    excluded = [
+        run
+        for run in runs
+        if not run.get("arrays")
+        or run.get("integrity_status", {}).get("state") == "invalid"
+    ]
+    if excluded:
+        st.warning(
+            f"{len(excluded)} saved run(s) excluded because their data are missing or failed integrity checks. Inspect them in Runs + export."
+        )
+    excluded_ids = {run["run_id"] for run in excluded}
+    return [run for run in runs if run["run_id"] not in excluded_ids]
+
+
 def sensitivity_view():
     st.markdown(
         '<div class="page-head"><span>SENSITIVITY EXPLORER</span><h2>Measure one controlled change at a time.</h2><p>Use saved experiments as explicit finite-difference evidence. HaloForge excludes confounded runs instead of pretending they isolate one parameter.</p></div>',
         unsafe_allow_html=True,
     )
-    runs = load_all_runs()
+    runs = analysis_runs()
     if len(runs) < 2:
         st.info(
             "Save a baseline and at least one run that changes exactly one numeric parameter. The Notebook can keep their lineage and hypotheses together."
@@ -2985,7 +3116,7 @@ def sensitivity_view():
         for key, value in baseline["params"].items()
         if isinstance(value, (int, float))
         and not isinstance(value, bool)
-        and value != 0
+        and np.isfinite(value)
         and key not in {"mode", "z_presets_selected"}
     ]
     columns = st.columns(4)
@@ -3083,8 +3214,13 @@ def sensitivity_view():
             st.caption(counterfactual["scope_limit"])
             if counterfactual["status"] == "saved_match":
                 row = counterfactual["selected"]
+                parameter_change_label = (
+                    f"{row['parameter_fractional_change']:.2%}"
+                    if row["parameter_fractional_change"] is not None
+                    else f"{row['parameter_absolute_change']:+.5g} in absolute units"
+                )
                 st.success(
-                    f"Saved match: {row['run']} changes {parameter} by {row['parameter_fractional_change']:.2%} "
+                    f"Saved match: {row['run']} changes {parameter} by {parameter_change_label} "
                     f"and changes {observable} by {row['observable_fractional_change']:.2%}."
                 )
             else:
@@ -3141,7 +3277,7 @@ def experiment_design_view():
 
 def benchmark_view():
     st.markdown(
-        '<div class="page-head"><span>BENCHMARK LAB</span><h2>Show agreement. Never hide disagreement.</h2><p>This first benchmark checks the stored fixed-grid σ₈ integration against an independently evaluated adaptive integral over the exact same sampled power spectrum.</p></div>',
+        '<div class="page-head"><span>BENCHMARK LAB</span><h2>Check numerical agreement</h2><p>Compare saved σ₈ values with adaptive integration of the same sampled power spectrum.</p></div>',
         unsafe_allow_html=True,
     )
     ready = require_run()
@@ -3191,7 +3327,7 @@ def benchmark_view():
         )
         st.caption("Registry version: " + CANONICAL_CASES_VERSION)
     st.warning(
-        "This is an internal numerical check, not an external CLASS/CAMB/Colossus/hmf or simulation benchmark. It cannot establish physical validity or publication readiness."
+        "This check tests integration of the saved spectrum. External solver agreement and empirical HMF calibration require separate evidence."
     )
     run_key = st.session_state.get("current_run_id", "active")
     result_key = f"internal_benchmark_{run_key}"
@@ -3412,10 +3548,10 @@ def gaussian_field_slice(k, power, box, n, smoothing, modes, kk):
 
 def structure_view():
     st.markdown(
-        '<div class="page-head"><span>STRUCTURE FIELD</span><h2>Same phases. Honest amplitude differences.</h2><p>A periodic 3D Gaussian linear-density realization is filtered by each run’s computed P(k,z); all panels use the same Fourier seed and a common normalization.</p></div>',
+        '<div class="page-head"><span>STRUCTURE FIELD</span><h2>Compare linear density fields</h2><p>A periodic 3D Gaussian linear-density realization is filtered by each run’s computed P(k,z); all panels use the same Fourier seed and a common normalization.</p></div>',
         unsafe_allow_html=True,
     )
-    runs = load_all_runs()
+    runs = analysis_runs()
     if not runs:
         st.info("Run a cosmology first.")
         return
@@ -3474,19 +3610,27 @@ def structure_view():
             )
         )
     baseline_index = selected.index(baseline)
-    base_rms = max(float(np.std(fields[baseline_index])), 1e-30)
+    base_rms = float(np.sqrt(np.mean(fields[baseline_index] ** 2)))
+    if base_rms <= 0:
+        st.error(
+            "The baseline has no resolved field power. Increase the box size or extend the stored spectrum’s k range."
+        )
+        return
     normalized = [field / base_rms for field in fields]
     all_values = np.concatenate([np.abs(field).ravel() for field in normalized])
     color_extent = max(float(np.percentile(all_values, 99.5)), 1.0)
-    coords = np.linspace(0, box, n, endpoint=False)
+    coords = (np.arange(n) + 0.5) * box / n
 
-    cols = st.columns(len(selected))
+    st.caption(
+        "Colors share the baseline slice RMS. The color limits saturate the largest 0.5% of absolute field values; hover values retain their full amplitude."
+    )
+    cols = st.columns(min(2, len(selected)))
     for i, (r, field) in enumerate(zip(selected, normalized)):
         fig = go.Figure(
             go.Heatmap(
                 x=coords,
                 y=coords,
-                z=field,
+                z=field.T,
                 colorscale=[
                     [0, "#07131b"],
                     [0.25, "#123d56"],
@@ -3499,17 +3643,25 @@ def structure_view():
                 colorbar=dict(title="δ/σbase", thickness=9),
             )
         )
-        fig.update_xaxes(title="x [Mpc]", showgrid=False)
-        fig.update_yaxes(title="y [Mpc]", showgrid=False, scaleanchor="x")
+        fig.update_xaxes(
+            title="x [Mpc]", showgrid=False, range=[0, box], constrain="domain"
+        )
+        fig.update_yaxes(
+            title="y [Mpc]",
+            showgrid=False,
+            scaleanchor="x",
+            range=[0, box],
+            constrain="domain",
+        )
         set_plot(
             fig,
             r["name"],
             "Central slice of the same 3D Fourier realization. Colors are normalized by the baseline RMS, not separately by each run.",
         )
-        with cols[i]:
+        with cols[i % len(cols)]:
             chart(
                 fig,
-                480,
+                440,
                 key=f"field_{r['run_id']}",
             )
     differences = [
@@ -3522,7 +3674,10 @@ def structure_view():
             '<div class="section-label">DIFFERENCE FROM BASELINE</div>',
             unsafe_allow_html=True,
         )
-        dcols = st.columns(min(3, len(differences)))
+        dcols = st.columns(min(2, len(differences)))
+        st.caption(
+            "Difference maps share a separate color scale, saturated at the 99.5th percentile of absolute differences."
+        )
         diff_extent = max(
             float(
                 np.percentile(
@@ -3537,7 +3692,7 @@ def structure_view():
                 go.Heatmap(
                     x=coords,
                     y=coords,
-                    z=diff,
+                    z=diff.T,
                     colorscale="RdBu_r",
                     zmid=0,
                     zmin=-diff_extent,
@@ -3545,8 +3700,16 @@ def structure_view():
                     colorbar=dict(title="Δδ/σbase", thickness=9),
                 )
             )
-            fig.update_xaxes(title="x [Mpc]", showgrid=False)
-            fig.update_yaxes(title="y [Mpc]", showgrid=False, scaleanchor="x")
+            fig.update_xaxes(
+                title="x [Mpc]", showgrid=False, range=[0, box], constrain="domain"
+            )
+            fig.update_yaxes(
+                title="y [Mpc]",
+                showgrid=False,
+                scaleanchor="x",
+                range=[0, box],
+                constrain="domain",
+            )
             set_plot(
                 fig,
                 f"{selected[i]['name']} − {baseline['name']}",
@@ -3588,13 +3751,13 @@ def structure_view():
             rows.append(
                 {
                     "run": r["name"],
-                    "RMS δ": float(np.std(flat)),
-                    "RMS / baseline": float(np.std(flat) / base_rms),
+                    "RMS δ": float(np.sqrt(np.mean(flat**2))),
+                    "RMS / baseline": float(np.sqrt(np.mean(flat**2)) / base_rms),
                     "correlation with baseline": float(
                         np.corrcoef(flat, base_flat)[0, 1]
                     ),
                     "difference RMS / baseline": float(
-                        np.std(flat - base_flat) / base_rms
+                        np.sqrt(np.mean((flat - base_flat) ** 2)) / base_rms
                     ),
                 }
             )
@@ -4152,6 +4315,17 @@ def runs_view():
     )
 
     chosen = run_map[chosen_id]
+    if chosen.get("integrity_status", {}).get("state") == "invalid":
+        st.error(
+            "This run failed integrity verification. Restore the original files or calculate a new run. "
+            "The workspace download above preserves the damaged record for inspection."
+        )
+        st.json(chosen["integrity_status"])
+        if st.button("Delete selected run", type="secondary"):
+            delete_run(chosen_id)
+            st.session_state.pop("run_vault_selected_id", None)
+            st.rerun()
+        return
     arrays = chosen["arrays"]
 
     rename_key = f"rename_{chosen_id}"
