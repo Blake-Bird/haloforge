@@ -769,21 +769,28 @@ def apply_accessibility_preferences() -> None:
         styles.append("""
         html:root{--ink:#f7f8f6;--panel:#ffffff;--panel2:#f0f3f2;--line:#b7c2c3;--paper:#132126;--muted:#42545a;--cyan:#006f7a;--amber:#8a4b00;--rose:#ae1742;--green:#087543}
         [data-testid="stAppViewContainer"]{background-image:none!important;background:#f7f8f6!important}
-        [data-testid="stSidebar"]{background:#edf2f1!important}
+        [data-testid="stSidebar"]{background:#edf2f1!important;border-right:1px solid #c9d5d6!important}
         [data-testid="stHeader"]{background:rgba(247,248,246,.9)!important}
-        .hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#fff!important}
+        .hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#fff!important;border:1px solid #c9d5d6!important}
         .hero h1,.page-head h2,.empty b{color:#132126!important}
         .js-plotly-plot{filter:none}
         [data-testid="stDataFrame"],[data-testid="stTable"]{background:#ffffff!important;color:#132126!important;border-color:#b7c2c3!important}
         [data-testid="stDataFrame"] *{color:#132126!important}
         [data-testid="stPopoverBody"]{background:#ffffff!important;color:#132126!important;border:1px solid #b7c2c3!important;box-shadow:0 10px 30px rgba(0,0,0,0.15)!important}
         [data-testid="stPopoverBody"] label,[data-testid="stPopoverBody"] p,[data-testid="stPopoverBody"] span{color:#132126!important}
-        [data-baseweb="popover"],[data-baseweb="menu"],[role="listbox"]{background:#ffffff!important;color:#132126!important}
-        [data-baseweb="popover"] *{color:#132126!important}
+        [data-baseweb="popover"],[data-baseweb="menu"],[role="listbox"]{background:#ffffff!important;color:#132126!important;border:1px solid #b7c2c3!important}
+        [data-baseweb="popover"] *{color:#132126}
+        [data-baseweb="menu"] li{color:#132126!important}
+        [data-baseweb="menu"] li:hover,[data-baseweb="menu"] li[aria-selected="true"]{background-color:#006f7a!important;color:#ffffff!important}
+        [data-baseweb="menu"] li:hover *,[data-baseweb="menu"] li[aria-selected="true"] *{color:#ffffff!important}
         [data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="base-input"],textarea{background-color:#ffffff!important;color:#132126!important;border-color:#b7c2c3!important}
-        button:not([role="tab"]){background-color:#f0f3f2!important;color:#132126!important;border-color:#b7c2c3!important}
-        .stButton>button[kind="primary"],.stDownloadButton>button[kind="primary"]{background:var(--cyan)!important;color:#ffffff!important}
+        button:not([role="tab"]){background-color:#ffffff!important;color:#132126!important;border:1px solid #b7c2c3!important;box-shadow:0 1px 2px rgba(0,0,0,0.05)}
+        button:not([role="tab"]):hover{background-color:#f2f7f7!important;border-color:#006f7a!important;color:#006f7a!important}
+        .stButton>button[kind="primary"],.stDownloadButton>button[kind="primary"]{background:var(--cyan)!important;color:#ffffff!important;border:none!important}
         .stButton>button[kind="primary"] p,.stDownloadButton>button[kind="primary"] p{color:#ffffff!important}
+        [data-testid="stSegmentedControl"]{background:#e3ebea!important;border:1px solid #b7c2c3!important;border-radius:8px!important;margin-bottom:0.75rem!important}
+        [data-testid="stSegmentedControl"] button{background:transparent!important;border:none!important;box-shadow:none!important;color:#132126!important}
+        [data-testid="stSegmentedControl"] button[aria-checked="true"]{background:#ffffff!important;color:#006f7a!important;font-weight:600!important;box-shadow:0 2px 5px rgba(0,0,0,0.1)!important}
         """)
     elif theme == "High contrast":
         styles.append("""
@@ -902,10 +909,32 @@ def sidebar() -> str:
                 if st.button("Dismiss recovery notice"):
                     st.session_state["draft_recovery_issues"] = []
                     st.rerun()
-        with st.popover("Display & accessibility"):
-            st.selectbox(
-                "Color mode", ["Dark", "Light", "High contrast"], key="hf_theme"
-            )
+        current_theme = st.session_state.get("hf_theme", "Dark")
+        theme_map = {
+            "Dark": "🌙 Dark",
+            "Light": "☀️ Light",
+            "High contrast": "👁️ Contrast",
+        }
+        rev_theme_map = {v: k for k, v in theme_map.items()}
+        current_idx = (
+            ["Dark", "Light", "High contrast"].index(current_theme)
+            if current_theme in ["Dark", "Light", "High contrast"]
+            else 0
+        )
+        selected_label = st.radio(
+            "Color mode",
+            ["🌙 Dark", "☀️ Light", "👁️ Contrast"],
+            index=current_idx,
+            key="hf_theme_radio",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        selected_theme = rev_theme_map.get(selected_label, "Dark")
+        if selected_theme != current_theme:
+            st.session_state["hf_theme"] = selected_theme
+            st.rerun()
+
+        with st.popover("Display & motion preferences"):
             st.toggle(
                 "Reduce motion",
                 key="hf_reduced_motion",
@@ -951,27 +980,54 @@ def sidebar() -> str:
                 "Design a controlled comparison, inspect evolution, or explore parameter sensitivity."
             )
         else:
+            research_options = [
+                "Dashboard",
+                "Graph studio",
+                "Structure field",
+                "Fit + window atlas",
+                "Design experiment",
+                "Benchmark lab",
+                "Performance lab",
+                "Convergence lab",
+                "Evolution studio",
+                "Campaign lab",
+                "Simulation lab",
+                "Teach",
+                "Learn the pipeline",
+                "Notebook",
+                "Known limitations",
+                "Runs + export",
+                "Diagnostics",
+            ]
+            current_sec = st.session_state.get("hf_research_workspace", "Dashboard")
+            idx = (
+                research_options.index(current_sec)
+                if current_sec in research_options
+                else 0
+            )
             section = st.selectbox(
                 "Research workspace",
-                [
-                    "Dashboard",
-                    "Notebook",
-                    "Design experiment",
-                    "Benchmark lab",
-                    "Performance lab",
-                    "Convergence lab",
-                    "Known limitations",
-                    "Teach",
-                    "Learn the pipeline",
-                    "Graph studio",
-                    "Structure field",
-                    "Fit + window atlas",
-                    "Evolution studio",
-                    "Campaign lab",
-                    "Simulation lab",
-                    "Runs + export",
-                    "Diagnostics",
-                ],
+                research_options,
+                index=idx,
+                format_func=lambda s: {
+                    "Dashboard": "🔬 Core · Dashboard",
+                    "Graph studio": "🔬 Core · Graph Studio",
+                    "Structure field": "🔬 Core · Structure Field 3D",
+                    "Fit + window atlas": "🔬 Core · Fit + Window Atlas",
+                    "Design experiment": "🧪 Labs · One-Change Planner",
+                    "Benchmark lab": "🧪 Labs · Benchmark Lab",
+                    "Performance lab": "🧪 Labs · Performance Lab",
+                    "Convergence lab": "🧪 Labs · Convergence Lab",
+                    "Evolution studio": "🌌 HPC · Evolution Studio (z=20→0)",
+                    "Campaign lab": "🌌 HPC · Campaign Orchestrator",
+                    "Simulation lab": "🌌 HPC · GADGET-4 Simulation Lab",
+                    "Teach": "📚 Learn · Guided Pedagogy",
+                    "Learn the pipeline": "📚 Learn · Pipeline Tour",
+                    "Notebook": "📚 Learn · Research Notebook",
+                    "Known limitations": "📚 Learn · Known Limitations",
+                    "Runs + export": "💾 System · Saved Runs & Export",
+                    "Diagnostics": "💾 System · Diagnostics & Health",
+                }.get(s, s),
                 key="hf_research_workspace",
             )
 
@@ -1016,11 +1072,11 @@ def sidebar() -> str:
                 key="hf_run_name",
                 placeholder="Leave blank for an automatic name",
             )
-            with st.expander("Primordial field", expanded=True):
+            with st.expander("Primordial perturbations (Aₛ, nₛ)", expanded=False):
                 slider("A_s")
                 slider("n_s")
                 slider("k_pivot")
-            with st.expander("Background cosmology", expanded=True):
+            with st.expander("Background cosmology (H₀, Ωₘ...)", expanded=True):
                 slider("H0")
                 slider("Omega_m")
                 slider("Omega_b")
@@ -1033,10 +1089,11 @@ def sidebar() -> str:
                     f'<div class="mini-readout"><span>h</span><b>{d["h"]:.4f}</b><span>Ωcdm</span><b>{d["Omega_cdm"]:.4f}</b><span>Ωr</span><b>{d["Omega_r"]:.2e}</b></div>',
                     unsafe_allow_html=True,
                 )
-            with st.expander("Axion early dark energy", expanded=True):
+            ede_active = bool(params.get("enable_ede", True))
+            with st.expander("Axion early dark energy (EDE)", expanded=ede_active):
                 params["enable_ede"] = st.toggle(
                     "Enable EDE",
-                    value=bool(params.get("enable_ede", True)),
+                    value=ede_active,
                     key="hf_enable_ede",
                 )
                 slider("f_EDE")
@@ -1054,7 +1111,7 @@ def sidebar() -> str:
                 )
                 d = derived_quantities(params)
                 st.caption(f"aᶜ = {d['a_c']:.3e}  ·  zᶜ = {d['z_c']:.1f}")
-            with st.expander("Halo analysis", expanded=True):
+            with st.expander("Halo mass function & fits", expanded=False):
                 params["window_type"] = st.selectbox(
                     "Primary window",
                     WINDOWS,
@@ -1069,6 +1126,13 @@ def sidebar() -> str:
                     "Primary HMF fit",
                     FITTING_NAMES,
                     index=FITTING_NAMES.index(params.get("fitting", FITTING_NAMES[1])),
+                    format_func=lambda f: {
+                        "Sheth-Tormen 1999": "⭐ Sheth-Tormen (1999) [Standard Ref]",
+                        "Tinker 2008": "⭐ Tinker (2008) [Calibrated SO]",
+                        "Press-Schechter 1974": "Press-Schechter (1974) [Analytic Top-Hat]",
+                        "Watson SO 2013": "Watson (2013) [Spherical Overdensity]",
+                        "Watson FO 2013": "Watson (2013) [Friends-of-Friends]",
+                    }.get(f, f),
                     key="hf_fitting",
                 )
                 contract = fit_contract(params["fitting"])

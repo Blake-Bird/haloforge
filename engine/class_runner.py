@@ -264,6 +264,64 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
         ) from exc
 
 
+_RESOLVED_CLASS_PYTHON: str | None = None
+
+
+def resolve_class_python() -> str:
+    """Find a Python executable with the classy/AxiCLASS binding available."""
+    global _RESOLVED_CLASS_PYTHON
+    if _RESOLVED_CLASS_PYTHON and Path(_RESOLVED_CLASS_PYTHON).exists():
+        return _RESOLVED_CLASS_PYTHON
+
+    override = os.environ.get("HALOFORGE_CLASS_PYTHON")
+    if override and Path(override).exists():
+        _RESOLVED_CLASS_PYTHON = override
+        return override
+
+    try:
+        import classy  # type: ignore # noqa: F401
+
+        _RESOLVED_CLASS_PYTHON = sys.executable
+        return sys.executable
+    except Exception:
+        pass
+
+    candidate_paths = [
+        Path.home() / "miniforge3/envs/dmresearch/bin/python",
+        Path.home() / ".conda/envs/dmresearch/bin/python",
+        Path("/opt/anaconda3/envs/dmresearch/bin/python"),
+    ]
+    for base in [
+        Path.home() / "miniforge3/envs",
+        Path.home() / ".conda/envs",
+        Path("/opt/anaconda3/envs"),
+    ]:
+        if base.exists():
+            for env_dir in base.iterdir():
+                py = env_dir / "bin" / "python"
+                if py.exists() and py not in candidate_paths:
+                    candidate_paths.append(py)
+
+    for cand in candidate_paths:
+        if cand.exists():
+            try:
+                probe = subprocess.run(
+                    [str(cand), "-c", "import classy; assert hasattr(classy, 'Class')"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                if probe.returncode == 0:
+                    _RESOLVED_CLASS_PYTHON = str(cand)
+                    return str(cand)
+            except Exception:
+                continue
+
+    _RESOLVED_CLASS_PYTHON = sys.executable
+    return sys.executable
+
+
 def compute_matter_power(params: dict) -> dict[str, Any]:
     """Run CLASS in a dedicated worker process so native failures cannot kill Streamlit."""
     errors = solver_parameter_errors(params)
@@ -286,8 +344,9 @@ def compute_matter_power(params: dict) -> dict[str, Any]:
         params_path = temp / "params.json"
         result_path = temp / "result.npz"
         params_path.write_text(json.dumps(params, default=str), encoding="utf-8")
+        worker_py = resolve_class_python()
         command = [
-            sys.executable,
+            worker_py,
             "-m",
             "engine.class_worker",
             str(params_path),
@@ -353,18 +412,43 @@ def compute_matter_power(params: dict) -> dict[str, Any]:
 
 
 def classy_import_diagnostics() -> dict[str, Any]:
+    worker_py = resolve_class_python()
+    if worker_py != sys.executable:
+        try:
+            probe = subprocess.run(
+                [
+                    worker_py,
+                    "-c",
+                    "import classy; print(getattr(classy, '__file__', ''))",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            if probe.returncode == 0:
+                return {
+                    "imports": True,
+                    "path": probe.stdout.strip(),
+                    "error": "",
+                    "worker_python": worker_py,
+                }
+        except Exception:
+            pass
     try:
         module = importlib.import_module("classy")
         return {
             "imports": hasattr(module, "Class"),
             "path": getattr(module, "__file__", ""),
             "error": "",
+            "worker_python": sys.executable,
         }
     except Exception as exc:
         return {
             "imports": False,
             "path": "",
             "error": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
+            "worker_python": worker_py,
         }
 
 
@@ -373,6 +457,7 @@ def environment_diagnostics() -> dict[str, Any]:
     return {
         "python": sys.version.replace("\n", " "),
         "executable": sys.executable,
+        "worker_executable": resolve_class_python(),
         "platform": platform.platform(),
         "numpy": np.__version__,
         "classy_imports": classy["imports"],
