@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import re
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -16,6 +17,7 @@ MAX_BUNDLE_FILES = 2_000
 MAX_BUNDLE_BYTES = 1_000_000_000
 ALLOWED_ROOTS = frozenset({"saved_runs", "exports", "state"})
 WORKSPACE_MANIFEST = "workspace-manifest.json"
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
 class BundleValidationError(ValueError):
@@ -48,6 +50,35 @@ def _safe_relative_path(name: str) -> PurePosixPath:
     return path
 
 
+def _validate_saved_run_member(
+    name: str, payload: bytes, member_names: set[str]
+) -> None:
+    """Reject metadata that cannot safely become a local saved-run record."""
+    if not name.startswith("saved_runs/") or not name.endswith(".json"):
+        return
+    try:
+        document = json.loads(payload)
+        run_id = document["run_id"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BundleValidationError(f"Saved-run metadata is malformed: {name}") from exc
+    if not isinstance(run_id, str) or not _SAFE_RUN_ID.fullmatch(run_id):
+        raise BundleValidationError(f"Saved run has an unsafe identifier: {name}")
+    if name != f"saved_runs/{run_id}.json":
+        raise BundleValidationError("Saved-run filename does not match its identifier.")
+    arrays_file = document.get("arrays_file")
+    if arrays_file is not None:
+        if not isinstance(arrays_file, str) or not re.fullmatch(
+            rf"{re.escape(run_id)}(?:\.[A-Za-z0-9_-]+)?\.npz", arrays_file
+        ):
+            raise BundleValidationError(
+                "Saved run declares an invalid array-file name."
+            )
+        if f"saved_runs/{arrays_file}" not in member_names:
+            raise BundleValidationError(
+                "Saved run declares an array file absent from archive."
+            )
+
+
 def plan_workspace_import(payload: bytes, data_root: Path) -> WorkspaceImportPlan:
     """Validate every member before a workspace archive is allowed to write."""
     try:
@@ -67,6 +98,7 @@ def plan_workspace_import(payload: bytes, data_root: Path) -> WorkspaceImportPla
             if len(set(names)) != len(names):
                 raise BundleValidationError("Archive contains duplicate paths.")
             workspace_files = [name for name in names if name != WORKSPACE_MANIFEST]
+            member_names = set(names)
             integrity = "legacy-unverified"
             if WORKSPACE_MANIFEST in names:
                 try:
@@ -86,6 +118,8 @@ def plan_workspace_import(payload: bytes, data_root: Path) -> WorkspaceImportPla
                             f"Integrity verification failed for {name}."
                         )
                 integrity = "verified"
+            for name in workspace_files:
+                _validate_saved_run_member(name, archive.read(name), member_names)
     except BadZipFile as exc:
         raise BundleValidationError(
             "The selected file is not a readable ZIP archive."

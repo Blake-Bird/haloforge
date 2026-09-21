@@ -38,24 +38,43 @@ EXPORT_DIR = DATA_ROOT / "exports"
 STATE_DIR = DATA_ROOT / "state"
 LAST_RUN_PATH = STATE_DIR / "last_run.json"
 DRAFT_PARAMS_PATH = STATE_DIR / "draft_params.json"
+TRASH_DIR = DATA_ROOT / "trash"
 _STORAGE_LOCK = threading.RLock()
 INTEGRITY_SCHEMA_VERSION = "haloforge-run-integrity-v1"
 TABLE_METADATA_SCHEMA_VERSION = "haloforge-table-metadata-v1"
 DATA_DICTIONARY_SCHEMA_VERSION = "haloforge-data-dictionary-v1"
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
 def _ensure_dirs() -> None:
     require_safe_persistent_storage()
-    for folder in (DATA_ROOT, RUN_DIR, EXPORT_DIR, STATE_DIR):
+    for folder in (DATA_ROOT, RUN_DIR, EXPORT_DIR, STATE_DIR, TRASH_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
 
 def _json_path(run_id: str) -> Path:
+    _validate_run_id(run_id)
     return RUN_DIR / f"{run_id}.json"
 
 
 def _npz_path(run_id: str) -> Path:
+    _validate_run_id(run_id)
     return RUN_DIR / f"{run_id}.npz"
+
+
+def _is_owned_array_filename(run_id: str, name: object) -> bool:
+    """Allow legacy arrays and generation-specific arrays owned by one run."""
+    if not isinstance(name, str):
+        return False
+    safe_id = _validate_run_id(run_id)
+    return bool(re.fullmatch(rf"{re.escape(safe_id)}(?:\.[A-Za-z0-9_-]+)?\.npz", name))
+
+
+def _validate_run_id(run_id: str) -> str:
+    """Reject untrusted IDs before they can form a vault filesystem path."""
+    if not isinstance(run_id, str) or not _SAFE_RUN_ID.fullmatch(run_id):
+        raise ValueError("Run identifier is not a safe vault token")
+    return run_id
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -146,7 +165,9 @@ def _metadata(run: dict) -> dict:
     payload["name"] = payload.get("run_name", payload.get("name", "Untitled run"))
     payload["run_name"] = payload["name"]
     payload["arrays_file"] = (
-        f"{run['run_id']}.npz" if arrays else payload.get("arrays_file")
+        payload.get("arrays_file", f"{run['run_id']}.npz")
+        if arrays
+        else payload.get("arrays_file")
     )
     return payload
 
@@ -206,8 +227,11 @@ def save_run(run: dict) -> dict:
         run["updated_at"] = datetime.now(timezone.utc).isoformat()
         arrays = run.get("arrays", {})
         if arrays:
-            arrays_path = _npz_path(run["run_id"])
+            from uuid import uuid4
+
+            arrays_path = RUN_DIR / f"{run['run_id']}.{uuid4().hex}.npz"
             _atomic_write_npz(arrays_path, arrays)
+            run["arrays_file"] = arrays_path.name
             run["integrity"] = {
                 "schema_version": INTEGRITY_SCHEMA_VERSION,
                 "arrays_sha256": file_sha256(arrays_path),
@@ -240,6 +264,10 @@ def _load_arrays(run: dict) -> dict:
     if not arrays_file:
         run["arrays"] = {}
         return run
+    if not _is_owned_array_filename(run["run_id"], arrays_file):
+        run["arrays"] = {}
+        run["storage_warning"] = "Saved run declares an invalid array-file name"
+        return run
     path = RUN_DIR / arrays_file
     if not path.exists():
         run["arrays"] = {}
@@ -265,8 +293,12 @@ def _verify_run_integrity(run: dict) -> dict:
     expected_arrays = integrity.get("arrays_sha256")
     arrays_file = run.get("arrays_file")
     if expected_arrays and arrays_file:
-        path = RUN_DIR / arrays_file
-        actual = file_sha256(path) if path.is_file() else None
+        path = (
+            RUN_DIR / arrays_file
+            if _is_owned_array_filename(run["run_id"], arrays_file)
+            else None
+        )
+        actual = file_sha256(path) if path and path.is_file() else None
         checks.append(
             {
                 "check": "array payload SHA-256",
@@ -325,6 +357,7 @@ def load_all_runs() -> list[dict]:
                 document = migrate_run_document(
                     json.loads(path.read_text(encoding="utf-8"))
                 )
+                _validate_run_id(document.get("run_id"))
                 runs.append(
                     _verify_run_integrity(_normalize_run(_load_arrays(document)))
                 )
@@ -335,7 +368,10 @@ def load_all_runs() -> list[dict]:
 
 def load_run(run_id: str) -> dict | None:
     _ensure_dirs()
-    path = _json_path(run_id)
+    try:
+        path = _json_path(run_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     with _STORAGE_LOCK:
@@ -348,21 +384,119 @@ def load_run(run_id: str) -> dict | None:
             return None
 
 
-def delete_run(run_id: str) -> None:
+def _trash_entry_path(deletion_id: str) -> Path:
+    _validate_run_id(deletion_id)
+    return TRASH_DIR / deletion_id
+
+
+def delete_run(run_id: str) -> str | None:
+    """Move a run and its exports to a recoverable local trash entry.
+
+    The original locations are moved on the same filesystem rather than
+    recursively erased.  The returned deletion identifier can be supplied to
+    :func:`restore_deleted_run` until local trash cleanup is deliberately added.
+    """
+    _validate_run_id(run_id)
+    _ensure_dirs()
     with _STORAGE_LOCK:
-        for path in (_json_path(run_id), _npz_path(run_id)):
-            path.unlink(missing_ok=True)
-        export_dir = run_export_dir(run_id)
-        if export_dir.exists():
-            for child in sorted(export_dir.rglob("*"), reverse=True):
-                if child.is_file():
-                    child.unlink(missing_ok=True)
-                elif child.is_dir():
-                    child.rmdir()
-            export_dir.rmdir()
+        metadata_path = _json_path(run_id)
+        array_paths = [_npz_path(run_id)]
+        if metadata_path.is_file():
+            try:
+                arrays_file = json.loads(metadata_path.read_text(encoding="utf-8")).get(
+                    "arrays_file"
+                )
+                if _is_owned_array_filename(run_id, arrays_file):
+                    array_paths.append(RUN_DIR / arrays_file)
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        source_items = {
+            "saved_runs": [
+                path for path in (metadata_path, *array_paths) if path.exists()
+            ],
+            "exports": [run_export_dir(run_id)]
+            if run_export_dir(run_id).exists()
+            else [],
+        }
+        if not any(source_items.values()):
+            return None
+        from uuid import uuid4
+
+        deletion_id = f"deleted-{uuid4()}"
+        entry = _trash_entry_path(deletion_id)
+        entry.mkdir(parents=True, exist_ok=False)
+        manifest = {
+            "schema_version": "haloforge-trash-v1",
+            "deletion_id": deletion_id,
+            "run_id": run_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "state": "moving_to_trash",
+            "items": [],
+        }
+        _atomic_write_text(entry / "manifest.json", json.dumps(manifest, indent=2))
+        for category, paths in source_items.items():
+            destination_root = entry / category
+            destination_root.mkdir(parents=True, exist_ok=True)
+            for path in paths:
+                destination = destination_root / path.name
+                os.replace(path, destination)
+                manifest["items"].append(
+                    {"category": category, "name": path.name, "moved": True}
+                )
+                _atomic_write_text(
+                    entry / "manifest.json", json.dumps(manifest, indent=2)
+                )
+        manifest["state"] = "trashed"
+        _atomic_write_text(entry / "manifest.json", json.dumps(manifest, indent=2))
         if get_last_run_id() == run_id:
             remaining = load_all_runs()
             set_last_run_id(remaining[-1]["run_id"] if remaining else None)
+        return deletion_id
+
+
+def restore_deleted_run(deletion_id: str) -> str:
+    """Restore a complete trashed run only when its original paths are free."""
+    _validate_run_id(deletion_id)
+    _ensure_dirs()
+    with _STORAGE_LOCK:
+        entry = _trash_entry_path(deletion_id)
+        manifest_path = entry / "manifest.json"
+        if not manifest_path.is_file():
+            raise ValueError("Deleted-run recovery record does not exist")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            run_id = _validate_run_id(manifest["run_id"])
+            items = manifest["items"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("Deleted-run recovery record is malformed") from exc
+        if manifest.get("state") != "trashed" or not isinstance(items, list):
+            raise ValueError("Deleted run is not available for restoration")
+        destinations = {
+            "saved_runs": RUN_DIR,
+            "exports": EXPORT_DIR,
+        }
+        planned: list[tuple[Path, Path]] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("category") not in destinations:
+                raise ValueError("Deleted-run recovery record contains an unsafe item")
+            name = item.get("name")
+            if not isinstance(name, str) or Path(name).name != name:
+                raise ValueError("Deleted-run recovery record contains an unsafe path")
+            source = entry / item["category"] / name
+            destination = destinations[item["category"]] / name
+            if not source.exists():
+                raise ValueError("Deleted-run recovery data is incomplete")
+            if destination.exists():
+                raise ValueError("Cannot restore because a current run uses this path")
+            planned.append((source, destination))
+        manifest["state"] = "restoring"
+        _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
+        for source, destination in planned:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+        manifest["state"] = "restored"
+        _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
+        return run_id
 
 
 def duplicate_run(run_id: str) -> dict | None:
@@ -560,6 +694,7 @@ def _pipeline_run_from_saved(run: dict) -> dict:
 
 
 def run_export_dir(run_id: str) -> Path:
+    _validate_run_id(run_id)
     return EXPORT_DIR / run_id
 
 

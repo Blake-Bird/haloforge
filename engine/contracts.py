@@ -25,6 +25,7 @@ class FitContract:
     mass_definition: str
     redshift_range: tuple[float, float] | None = None
     log_inv_sigma_range: tuple[float, float] | None = None
+    log_inv_sigma_base: float = float(np.e)
     delta_range: tuple[float, float] | None = None
     citation: str = ""
 
@@ -49,7 +50,13 @@ FIT_CONTRACTS = {
         "empirical", "fof_b0.2", (0, 30), (-0.5, 1.2), citation="Reed et al. 2007"
     ),
     "Tinker 2008": FitContract(
-        "empirical", "so_mean", (0, 2.5), (-0.6, 0.4), (200, 3200), "Tinker et al. 2008"
+        "empirical",
+        "so_mean",
+        (0, 2.5),
+        (-0.6, 0.4),
+        10.0,
+        (200, 3200),
+        "Tinker et al. 2008",
     ),
     "Crocce 2010": FitContract(
         "empirical", "fof_b0.2", (0, 2), citation="Crocce et al. 2010"
@@ -70,6 +77,7 @@ FIT_CONTRACTS = {
         "empirical",
         "so_mean",
         (0, 30),
+        (-0.55, 1.05),
         delta_range=(75.1, 3200),
         citation="Watson et al. 2013",
     ),
@@ -77,7 +85,13 @@ FIT_CONTRACTS = {
 
 FIT_ALIASES = {
     "Press-Schechter": "Press-Schechter 1974",
+    "Press-Schechter (1974)": "Press-Schechter 1974",
     "Sheth-Tormen": "Sheth-Tormen 2001",
+    "Sheth-Tormen (1999)": "Sheth-Tormen 2001",
+    "Sheth-Tormen (2001)": "Sheth-Tormen 2001",
+    "Tinker (2008)": "Tinker 2008",
+    "Watson SO (2013)": "Watson SO 2013",
+    "Watson FOF (2013)": "Watson FOF 2013",
 }
 
 
@@ -139,11 +153,20 @@ def validity_report(
             reasons.append(f"z={z:g} is outside the published range {lo:g}–{hi:g}")
     if contract.log_inv_sigma_range is not None:
         lo, hi = contract.log_inv_sigma_range
-        lnis = -np.log(sigma)
+        # Tinker et al. use log10(sigma^-1), with a stricter lower boundary
+        # above z=0. Other contracts explicitly retain ln(sigma^-1).
+        if name == "Tinker 2008" and float(z) > 0:
+            lo = -0.2
+        if contract.log_inv_sigma_base == 10.0:
+            lnis = -np.log10(sigma)
+            log_label = "log10(σ⁻¹)"
+        else:
+            lnis = -np.log(sigma)
+            log_label = "ln(σ⁻¹)"
         in_range = (lnis >= lo) & (lnis <= hi)
         valid &= in_range
         if not np.all(in_range):
-            reasons.append(f"some ln(σ⁻¹) values lie outside {lo:g} to {hi:g}")
+            reasons.append(f"some {log_label} values lie outside {lo:g} to {hi:g}")
     return {
         "fit": name,
         "family": contract.family,

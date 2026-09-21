@@ -43,9 +43,23 @@ def test_wrong_mass_definition_is_rejected(fit, chosen, expected):
 
 def test_out_of_calibration_is_visible_per_mass_sample():
     result = validity_report("Tinker 2008", np.array([0.5, 1, 2]), 0, "so_mean", 200)
-    assert result["status"] == "outside_calibration"
-    assert result["calibrated_mask"].tolist() == [False, True, False]
-    assert result["reasons"]
+    assert result["status"] == "calibrated"
+    assert result["calibrated_mask"].tolist() == [True, True, True]
+
+
+def test_tinker_domain_uses_published_log10_and_redshift_boundary():
+    assert (
+        validity_report("Tinker 2008", [1.8], 0, "so_mean", 200)["status"]
+        == "calibrated"
+    )
+    high_z = validity_report("Tinker 2008", [1.8], 1, "so_mean", 200)
+    assert high_z["status"] == "outside_calibration"
+    assert "log10" in high_z["reasons"][0]
+
+
+def test_watson_so_domain_marks_outside_published_ln_sigma_range():
+    result = validity_report("Watson SO 2013", [0.2, 1.0], 0, "so_mean", 178)
+    assert result["calibrated_mask"].tolist() == [False, True]
 
 
 def test_hmf_rejects_wrong_fit_definition_before_evaluating():

@@ -6,7 +6,7 @@ from __future__ import annotations
 PLANS = {
     "Tilt and low-mass structure": {
         "question": "How does a modest primordial tilt change propagate into low-mass structure?",
-        "candidate_parameters": {"enable_ede": False, "n_s": 0.99},
+        "candidate_parameters": {"n_s": 0.99},
         "hold_fixed": [
             "A_s",
             "k_pivot",
@@ -25,7 +25,7 @@ PLANS = {
     },
     "Numerical coverage at low mass": {
         "question": "Does the low-mass conclusion survive a wider sampled k range?",
-        "candidate_parameters": {"enable_ede": False, "k_max": 300.0},
+        "candidate_parameters": {"k_max": 300.0},
         "hold_fixed": ["all physical cosmological parameters", "mass grid", "HMF fit"],
         "inspect": [
             "Selected-mass k contribution band",
@@ -57,10 +57,27 @@ PLANS = {
 }
 
 
-def design_experiment(goal: str, baseline_params: dict) -> dict:
+STARTING_SOURCES = {
+    "active": "The current staged parameters. Applies the candidate modification to the current in-memory controls.",
+    "named_baseline": "Named ΛCDM baseline. Anchors all other parameters to the selected saved baseline run.",
+    "canonical_preset": "Canonical Planck ΛCDM preset. Starts cleanly from standard Planck 2018 flat ΛCDM reference values.",
+}
+
+
+def design_experiment(
+    goal: str,
+    baseline_params: dict,
+    *,
+    starting_source: str = "active",
+    baseline_name: str | None = None,
+) -> dict:
     """Return a concrete candidate based on a supplied named scientific goal."""
     if goal not in PLANS:
         raise ValueError(f"Unknown experiment-design goal: {goal}")
+    if starting_source not in STARTING_SOURCES:
+        raise ValueError(
+            f"Unknown starting source: {starting_source}. Must be one of {list(STARTING_SOURCES)}"
+        )
     plan = PLANS[goal]
     candidate = {**baseline_params, **plan["candidate_parameters"]}
     changed = {
@@ -68,9 +85,14 @@ def design_experiment(goal: str, baseline_params: dict) -> dict:
         for key in plan["candidate_parameters"]
         if baseline_params.get(key) != candidate.get(key)
     }
+    source_desc = STARTING_SOURCES[starting_source]
+    if starting_source == "named_baseline" and baseline_name:
+        source_desc = f"Named baseline: “{baseline_name}”. Anchors all other parameters to this saved reference."
     return {
         "goal": goal,
         **plan,
         "parameter_diff": changed,
-        "scope_limit": "This is a transparent one-change plan, not active learning, an emulator, a parameter posterior, or an automated scientific conclusion.",
+        "starting_source": starting_source,
+        "starting_point": source_desc,
+        "scope_limit": "This is a transparent controlled-change plan, not active learning, an emulator, a parameter posterior, or an automated scientific conclusion.",
     }

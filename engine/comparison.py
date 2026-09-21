@@ -107,11 +107,32 @@ def transform_curve(x, y, bx, by, mode):
     bx, by = _validated_curve(bx, by)
     if mode == "Overlay":
         return y.copy()
-    if mode not in {"Ratio", "Fractional difference", "Percent difference"}:
+    if mode not in {
+        "Ratio",
+        "Fractional difference",
+        "Percent difference",
+        "Residual",
+        "Standardized residual",
+    }:
         raise ValueError(f"Unknown comparison mode: {mode}")
     base = np.full(x.shape, np.nan)
     inside = (x >= bx[0]) & (x <= bx[-1])
     base[inside], _ = _interpolate_curve(bx, by, x[inside])
+
+    if mode == "Residual":
+        diff = np.full(x.shape, np.nan)
+        valid = np.isfinite(y) & np.isfinite(base)
+        diff[valid] = y[valid] - base[valid]
+        diff[~np.isfinite(diff)] = np.nan
+        return diff
+
+    if mode == "Standardized residual":
+        res = np.full(x.shape, np.nan)
+        valid = np.isfinite(y) & np.isfinite(base) & (np.abs(base) > 0)
+        res[valid] = (y[valid] - base[valid]) / np.sqrt(np.abs(base[valid]))
+        res[~np.isfinite(res)] = np.nan
+        return res
+
     ratio = np.full(x.shape, np.nan)
     valid = np.isfinite(y) & np.isfinite(base) & (base != 0)
     with np.errstate(over="ignore", invalid="ignore"):

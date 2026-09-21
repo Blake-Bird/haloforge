@@ -11,6 +11,7 @@ from scipy.integrate import IntegrationWarning, quad
 
 from engine.sigma import build_power_interpolator
 from engine.windows import window_squared
+from engine.saved_run import pipeline_from_saved_run
 
 
 BENCHMARK_VERSION = "haloforge-internal-sigma8-v1"
@@ -204,6 +205,8 @@ def internal_sigma8_benchmark(
     """
     if not np.isfinite(relative_tolerance) or relative_tolerance <= 0:
         raise ValueError("Benchmark relative tolerance must be finite and positive")
+    if "power_result" not in run or "sigma_result" not in run:
+        run = pipeline_from_saved_run(run)
     power = run["power_result"]
     sigma = run["sigma_result"]
     k = np.asarray(power["k"], dtype=float)

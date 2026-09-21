@@ -8,6 +8,7 @@ from engine.fitting_functions import (
     f_sheth_tormen,
     f_reed03,
     f_reed07,
+    f_watson_so13,
 )
 
 
@@ -60,6 +61,22 @@ def test_reed07_slope_dependence_matches_published_exponential():
         f_reed07(sigma)
     with pytest.raises(ValueError, match="n_eff > -3"):
         f_reed07(sigma, neff=-3)
+
+
+@pytest.mark.parametrize(
+    "z, expected",
+    [
+        (0.0, [0.018385830031551, 0.288231441278056, 0.316945283685185]),
+        (6.0, [0.015824907419128, 0.210487592906024, 0.408227607148221]),
+    ],
+)
+def test_watson_so_endpoint_coefficients_match_published_mapping(z, expected):
+    # Watson et al. (2013), eq. 17 and Table 2, Δ=178 and Ωm=0.3.
+    np.testing.assert_allclose(
+        f_watson_so13(np.array([0.5, 1.0, 2.0]), z=z, omega_m_z=0.3, delta_halo=178),
+        expected,
+        rtol=2e-12,
+    )
 
 
 @pytest.mark.parametrize("fit", FITTING_NAMES)

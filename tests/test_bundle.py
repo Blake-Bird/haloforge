@@ -20,6 +20,10 @@ def _zip(entries: dict[str, bytes]) -> bytes:
     return out.getvalue()
 
 
+def _saved_run_body(run_id: str = "run") -> bytes:
+    return ('{"run_id":"' + run_id + '","params":{}}').encode()
+
+
 def test_workspace_import_rejects_traversal_before_writing(tmp_path):
     payload = _zip({"saved_runs/ok.json": b"ok", "../escape": b"no"})
     with pytest.raises(BundleValidationError, match="Unsafe archive path"):
@@ -31,7 +35,9 @@ def test_workspace_import_requires_explicit_overwrite(tmp_path):
     target = tmp_path / "saved_runs" / "run.json"
     target.parent.mkdir()
     target.write_bytes(b"old")
-    payload = _zip({"saved_runs/run.json": b"new", "state/draft_params.json": b"{}"})
+    payload = _zip(
+        {"saved_runs/run.json": _saved_run_body(), "state/draft_params.json": b"{}"}
+    )
     plan = plan_workspace_import(payload, tmp_path)
     assert plan.collisions == ("saved_runs/run.json",)
     with pytest.raises(BundleValidationError, match="overwrite"):
@@ -39,11 +45,11 @@ def test_workspace_import_requires_explicit_overwrite(tmp_path):
     assert target.read_bytes() == b"old"
     result = import_workspace(payload, tmp_path, overwrite=True)
     assert len(result.files) == 2
-    assert target.read_bytes() == b"new"
+    assert target.read_bytes() == _saved_run_body()
 
 
 def test_workspace_manifest_is_verified_before_import(tmp_path):
-    body = b"trusted"
+    body = _saved_run_body()
     payload = _zip(
         {
             "saved_runs/run.json": body,
@@ -63,6 +69,15 @@ def test_workspace_manifest_is_verified_before_import(tmp_path):
     )
     with pytest.raises(BundleValidationError, match="Integrity verification failed"):
         plan_workspace_import(tampered, tmp_path)
+
+
+def test_workspace_import_allows_a_generation_owned_array_filename(tmp_path):
+    body = b'{"run_id":"run","params":{},"arrays_file":"run.a1b2.npz"}'
+    payload = _zip({"saved_runs/run.json": body, "saved_runs/run.a1b2.npz": b"npz"})
+    assert plan_workspace_import(payload, tmp_path).files == (
+        "saved_runs/run.json",
+        "saved_runs/run.a1b2.npz",
+    )
 
 
 @pytest.mark.parametrize(

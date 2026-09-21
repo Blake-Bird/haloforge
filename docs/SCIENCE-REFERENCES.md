@@ -9,6 +9,14 @@ The previous implementation held A, a, b, c at the Δ=200 values while changing 
 
 This fixes the coefficient evaluation only. It does not establish EDE calibration, validate every selected redshift or sigma, convert M200c into M200m, or certify publication suitability. Those requirements remain open. Empirical error is not the floating-point interpolation tolerance.
 
+### Fit-domain conventions
+
+Tinker et al. (2008) express their sampled domain as \(\log_{10}(\sigma^{-1})\), not a natural logarithm: the implemented interval is −0.6 to 0.4 at z=0 and −0.2 to 0.4 for z>0. Watson SO (2013) uses \(\ln(\sigma^{-1})\), with the implemented published interval −0.55 to 1.05. These masks only expose the reported fit-domain boundary; they do not establish cosmology or halo-definition calibration.
+
+### Watson SO endpoint coefficient correction
+
+Watson et al. (2013), equation 17 and its coefficient table, define the multiplicity prefactor as \(A[(\beta/\sigma)^\alpha+1]\exp(-\gamma/\sigma^2)\). The z=0 and z≥6 endpoint branches now preserve that alpha/beta mapping. Fixed regression values at Δ=178 protect both endpoints. This correction does not validate Watson SO for EDE cosmologies.
+
 ## EDE background source
 
 For every completed CLASS/AxiCLASS solve, HaloForge reads the solver's background table and derives Ωm(z)=Ωm,0(1+z)^3/[H(z)/H(0)]² on the requested redshift grid. Watson SO receives that value. When an EDE solve lacks a usable CLASS background table, Watson SO is unavailable rather than using a ΛCDM closure approximation. Other outputs remain available and record the background warning. This establishes internal provenance for the background value; it does not validate the Watson SO calibration for EDE cosmologies.

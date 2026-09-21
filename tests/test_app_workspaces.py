@@ -190,3 +190,49 @@ def test_comparison_survives_repeated_widget_updates(saved_app):
         candidate = saved_app.session_state["point_compare_candidate_id"]
         assert isinstance(candidate, str)
         assert candidate != baseline["run_id"]
+
+
+def test_evolution_studio_workspace_renders_without_exception(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Evolution studio"
+    saved_app.run()
+    assert not saved_app.exception, [
+        (item.message, item.stack_trace) for item in saved_app.exception
+    ]
+    # Check that scrubber slider exists
+    assert any(s.key == "evo_scrubber" for s in saved_app.slider)
+
+
+def test_campaign_lab_workspace_renders_without_exception(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Campaign lab"
+    saved_app.run()
+    assert not saved_app.exception, [
+        (item.message, item.stack_trace) for item in saved_app.exception
+    ]
+    # Check campaign run button exists
+    assert any(b.key == "camp_run_btn" for b in saved_app.button)
+
+
+def test_simulation_lab_workspace_renders_without_exception(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Simulation lab"
+    saved_app.run()
+    assert not saved_app.exception, [
+        (item.message, item.stack_trace) for item in saved_app.exception
+    ]
+    # Check IC generator button exists
+    assert any(b.key == "sim_gen_ic_btn" for b in saved_app.button)
+
+
+def test_project_header_renders_active_and_baseline(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Dashboard"
+    saved_app.run()
+    assert not saved_app.exception
+    # Check that project-header HTML is rendered in markdown
+    assert any("project-header" in m.value for m in saved_app.markdown)
+    assert any(
+        "Synthetic run 0" in m.value or "Synthetic run 1" in m.value
+        for m in saved_app.markdown
+    )

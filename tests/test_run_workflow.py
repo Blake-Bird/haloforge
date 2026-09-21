@@ -1,5 +1,6 @@
 import numpy as np
 import json
+import pytest
 from zipfile import ZipFile
 from pypdf import PdfReader
 import pyarrow.parquet as pq
@@ -8,6 +9,7 @@ from config.defaults import DEFAULT_PARAMS
 from state.run_model import auto_run_name
 from state import run_storage
 from state.provenance import reproducibility_hash, run_provenance
+from state.bundle import BundleValidationError, plan_workspace_import
 
 
 def test_auto_run_name_baseline_and_high_as():
@@ -27,6 +29,83 @@ def test_unique_run_name_handles_duplicates():
         run_storage.unique_run_name("Run 001 — Baseline LCDM", existing)
         == "Run 001 — Baseline LCDM (3)"
     )
+
+
+@pytest.mark.parametrize("run_id", ["../outside", "/tmp/outside", "a/b", ".."])
+def test_storage_rejects_path_like_run_identifiers(tmp_path, monkeypatch, run_id):
+    monkeypatch.setattr(run_storage, "RUN_DIR", tmp_path / "saved_runs")
+    monkeypatch.setattr(run_storage, "EXPORT_DIR", tmp_path / "exports")
+    with pytest.raises(ValueError, match="safe vault token"):
+        run_storage.delete_run(run_id)
+    assert not list(tmp_path.rglob("*"))
+
+
+def test_deleted_run_is_moved_to_trash_and_can_be_restored(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_storage, "RUN_DIR", tmp_path / "saved_runs")
+    monkeypatch.setattr(run_storage, "EXPORT_DIR", tmp_path / "exports")
+    monkeypatch.setattr(run_storage, "TRASH_DIR", tmp_path / "trash")
+    run = {
+        "run_id": "restore-me",
+        "name": "Restorable run",
+        "params": dict(DEFAULT_PARAMS),
+        "derived": {"h": 0.7},
+        "arrays": {"k": np.array([0.1]), "P": np.array([1.0])},
+    }
+    run_storage.save_run(run)
+    export_dir = run_storage.run_export_dir("restore-me")
+    export_dir.mkdir(parents=True)
+    (export_dir / "result.txt").write_text("evidence", encoding="utf-8")
+    deletion_id = run_storage.delete_run("restore-me")
+    assert deletion_id
+    assert run_storage.load_run("restore-me") is None
+    assert (
+        run_storage.TRASH_DIR / deletion_id / "saved_runs" / "restore-me.json"
+    ).is_file()
+    assert run_storage.restore_deleted_run(deletion_id) == "restore-me"
+    assert run_storage.load_run("restore-me") is not None
+    assert (export_dir / "result.txt").read_text(encoding="utf-8") == "evidence"
+
+
+def test_save_uses_a_new_array_generation_before_repointing_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(run_storage, "RUN_DIR", tmp_path / "saved_runs")
+    run = {
+        "run_id": "generation-test",
+        "name": "Generation test",
+        "params": {},
+        "arrays": {"P": np.array([1.0])},
+    }
+    run_storage.save_run(run)
+    first = json.loads((run_storage.RUN_DIR / "generation-test.json").read_text())
+    run["arrays"] = {"P": np.array([2.0])}
+    run_storage.save_run(run)
+    second = json.loads((run_storage.RUN_DIR / "generation-test.json").read_text())
+    assert first["arrays_file"] != second["arrays_file"]
+    with np.load(run_storage.RUN_DIR / first["arrays_file"], allow_pickle=False) as old:
+        np.testing.assert_array_equal(old["P"], [1.0])
+    assert np.allclose(run_storage.load_run("generation-test")["arrays"]["P"], [2.0])
+
+
+@pytest.mark.parametrize(
+    "run_id, arrays_file",
+    [("../outside", None), ("safe-run", "../../sentinel.npz")],
+)
+def test_import_rejects_saved_run_metadata_path_traversal(
+    run_id, arrays_file, tmp_path
+):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    document = {"run_id": run_id, "params": {}}
+    if arrays_file is not None:
+        document["arrays_file"] = arrays_file
+    payload = BytesIO()
+    with ZipFile(payload, "w") as archive:
+        archive.writestr("saved_runs/innocent.json", json.dumps(document))
+    with pytest.raises(BundleValidationError):
+        plan_workspace_import(payload.getvalue(), tmp_path / "vault")
+    assert not (tmp_path / "vault").exists()
 
 
 def test_generate_run_exports_and_reload_arrays(tmp_path, monkeypatch):
@@ -273,7 +352,8 @@ def test_damaged_run_cannot_be_rechecksummed_by_mutations(tmp_path, monkeypatch)
         "arrays": {"P": np.array([1.0, 2.0])},
     }
     run_storage.save_run(run)
-    path = run_storage.RUN_DIR / "damaged.npz"
+    metadata = json.loads((run_storage.RUN_DIR / "damaged.json").read_text())
+    path = run_storage.RUN_DIR / metadata["arrays_file"]
     np.savez(path, P=np.array([9.0, 9.0]))
     originals = {p: p.read_bytes() for p in run_storage.RUN_DIR.iterdir()}
     loaded = run_storage.load_run("damaged")

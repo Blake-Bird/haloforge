@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.interpolate import CubicSpline
-from engine.contracts import FIT_CONTRACTS
+from engine.contracts import FIT_ALIASES, FIT_CONTRACTS
 
 
 # Tinker et al. (2008), SO overdensity relative to mean matter density.
@@ -239,9 +239,11 @@ def f_watson_so13(sigma, z=0.0, omega_m_z=0.3, delta_halo=200.0, **_):
     om = _positive_scalar(omega_m_z, "Matter fraction")
     delta = _positive_scalar(delta_halo, "Halo overdensity")
     if z == 0:
-        A, a, b, c = 0.194, 2.267, 1.805, 1.287
+        # Watson et al. (2013), eq. 17: alpha is the exponent and beta
+        # is the scale in [(beta/sigma)^alpha + 1].
+        A, a, b, c = 0.194, 1.805, 2.267, 1.287
     elif z >= 6:
-        A, a, b, c = 0.563, 0.874, 3.810, 1.453
+        A, a, b, c = 0.563, 3.810, 0.874, 1.453
     else:
         A = om * (1.907 * zp1**-3.216 + 0.074)
         a = om * (3.136 * zp1**-3.058 + 2.349)
@@ -283,11 +285,7 @@ _DISPATCH = {
 
 
 def canonical_name(name: str) -> str:
-    aliases = {
-        "Press-Schechter": "Press-Schechter 1974",
-        "Sheth-Tormen": "Sheth-Tormen 2001",
-    }
-    return aliases.get(name, name)
+    return FIT_ALIASES.get(name, name)
 
 
 def fitting_values(sigma, delta_c, fitting, z=0.0, **kwargs):

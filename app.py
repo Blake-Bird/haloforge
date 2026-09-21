@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from html import escape
 from copy import deepcopy
 from io import BytesIO
@@ -53,6 +54,7 @@ from engine.benchmark import (
     canonical_case_rows,
     internal_sigma8_benchmark,
 )
+from engine.saved_run import pipeline_from_saved_run
 from engine.performance import PERFORMANCE_BENCHMARK_VERSION, profile_core_pipeline
 from engine.figure_recipes import RECIPES, apply_figure_recipe, apply_chart_theme
 from engine.uncertainty import uncertainty_inventory
@@ -99,6 +101,7 @@ from state.run_storage import (
     get_run_label,
     load_all_runs,
     rename_run,
+    restore_deleted_run,
     save_draft_params,
     set_baseline,
     update_run_metadata,
@@ -142,6 +145,51 @@ from state.session import (
     reset_params,
     run_new_cosmology,
     slow_parameters_changed,
+)
+from engine.evolution import evolution_redshifts
+from engine.evolution_studio import (
+    calculate_evolution_frames,
+    build_evolution_figure,
+    evolution_contact_sheet,
+    evolution_frame_summary_table,
+)
+from engine.campaign import (
+    cartesian_campaign,
+    estimate_campaign_resources,
+    latin_hypercube_campaign,
+    sobol_campaign,
+)
+from engine.campaign_orchestrator import (
+    campaign_parallel_coordinates,
+    campaign_response_figure,
+    campaign_to_dataframe,
+    compute_campaign_sensitivities,
+    create_campaign,
+    execute_campaign_step,
+)
+from engine.nbody_setup import (
+    compute_box_resolution,
+)
+from engine.gadget4_adapter import (
+    run_installation_doctor,
+    generate_config_sh,
+    generate_gadget4_parameter_file,
+    generate_tabulated_expansion_history,
+    GADGET4_VERSION,
+    GADGET4_PINNED_COMMIT,
+    GADGET4_CITATION,
+)
+from engine.ic_generator import (
+    generate_2lpt_particles,
+)
+from engine.halo_catalogue import (
+    find_fof_halos,
+    catalogue_to_dataframe,
+    render_3d_halo_view,
+)
+from engine.hmf_nbody_comparison import (
+    compare_catalogue_to_analytic_hmf,
+    render_hmf_comparison_plot,
 )
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -566,7 +614,8 @@ def chart(
     apply_figure_recipe(fig, recipe)
 
     if axis_controls and key:
-        with st.popover(f"Axes · {title[:24]}"):
+        with st.popover("Configure axes"):
+            st.caption(f"Adjust scale and range for **{title}**")
             mode = st.selectbox(
                 "Range mode",
                 ["Best default", "Full data", "Custom"],
@@ -675,10 +724,14 @@ def chart(
 
 def info_label(key: str, title: str | None = None) -> None:
     heading, meaning, downstream, kind = PARAM_INFO[key]
-    st.markdown(
-        f"""<div class="parameter-lens"><span>{title or heading}<i>?</i></span><div class="lens-card"><div class="lens-kicker">PHYSICS GUIDE</div><h4>{heading}</h4><div class="lens-visual">{VISUALS[kind]}</div><p>{meaning}</p><b>{downstream}</b></div></div>""",
-        unsafe_allow_html=True,
-    )
+    # Native disclosure is keyboard and touch operable; the former hover-only
+    # card hid teaching content from non-pointer users.
+    with st.expander(f"Physics guide — {title or heading}", expanded=False):
+        st.caption("PHYSICS GUIDE")
+        st.markdown(f"#### {heading}")
+        st.markdown(VISUALS[kind], unsafe_allow_html=True)
+        st.write(meaning)
+        st.info(downstream)
 
 
 def slider(key: str, title: str | None = None) -> None:
@@ -715,18 +768,32 @@ def apply_accessibility_preferences() -> None:
     if theme == "Light":
         styles.append("""
         html:root{--ink:#f7f8f6;--panel:#ffffff;--panel2:#f0f3f2;--line:#b7c2c3;--paper:#132126;--muted:#42545a;--cyan:#006f7a;--amber:#8a4b00;--rose:#ae1742;--green:#087543}
-        [data-testid="stAppViewContainer"]{background-image:none!important}
+        [data-testid="stAppViewContainer"]{background-image:none!important;background:#f7f8f6!important}
         [data-testid="stSidebar"]{background:#edf2f1!important}
         [data-testid="stHeader"]{background:rgba(247,248,246,.9)!important}
         .hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#fff!important}
         .hero h1,.page-head h2,.empty b{color:#132126!important}
         .js-plotly-plot{filter:none}
+        [data-testid="stDataFrame"],[data-testid="stTable"]{background:#ffffff!important;color:#132126!important;border-color:#b7c2c3!important}
+        [data-testid="stDataFrame"] *{color:#132126!important}
+        [data-testid="stPopoverBody"]{background:#ffffff!important;color:#132126!important;border:1px solid #b7c2c3!important;box-shadow:0 10px 30px rgba(0,0,0,0.15)!important}
+        [data-testid="stPopoverBody"] label,[data-testid="stPopoverBody"] p,[data-testid="stPopoverBody"] span{color:#132126!important}
+        [data-baseweb="popover"],[data-baseweb="menu"],[role="listbox"]{background:#ffffff!important;color:#132126!important}
+        [data-baseweb="popover"] *{color:#132126!important}
+        [data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="base-input"],textarea{background-color:#ffffff!important;color:#132126!important;border-color:#b7c2c3!important}
+        button:not([role="tab"]){background-color:#f0f3f2!important;color:#132126!important;border-color:#b7c2c3!important}
+        .stButton>button[kind="primary"],.stDownloadButton>button[kind="primary"]{background:var(--cyan)!important;color:#ffffff!important}
+        .stButton>button[kind="primary"] p,.stDownloadButton>button[kind="primary"] p{color:#ffffff!important}
         """)
     elif theme == "High contrast":
         styles.append("""
         html:root{--ink:#000;--panel:#000;--panel2:#000;--line:#fff;--paper:#fff;--muted:#fff;--cyan:#00ffff;--amber:#ffff00;--rose:#ff75a6;--green:#5cff94}
         [data-testid="stAppViewContainer"]{background-image:none!important}.hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#000!important;border-color:#fff!important}
         .hero h1,.page-head h2,.empty b{color:#fff!important}.stButton>button{border-color:#fff!important}.stButton>button[kind="primary"]{background:#00ffff!important;color:#000!important}
+        [data-testid="stDataFrame"],[data-testid="stTable"]{background:#000000!important;border-color:#ffffff!important}
+        [data-testid="stDataFrame"] *{color:#ffffff!important}
+        [data-testid="stPopoverBody"]{background:#000000!important;border:1px solid #ffffff!important}
+        [data-baseweb="popover"],[data-baseweb="menu"]{background:#000000!important;color:#ffffff!important}
         """)
     if reduced_motion:
         styles.append(
@@ -777,9 +844,9 @@ def apply_preset(name: str) -> None:
     clear_widgets()
     params.clear()
     params.update(deepcopy(DEFAULT_PARAMS))
-    if name == "LCDM":
+    if name in ("LCDM", "ΛCDM"):
         params["enable_ede"] = False
-        st.session_state["run_name_draft"] = "Baseline LCDM"
+        st.session_state["run_name_draft"] = "Baseline ΛCDM"
     elif name == "EDE":
         params.update(enable_ede=True, f_EDE=0.10, log10_a_c=-3.5, n_EDE=3)
         st.session_state["run_name_draft"] = "EDE f0.10"
@@ -876,11 +943,13 @@ def sidebar() -> str:
         if mode == "Compare":
             section = st.radio(
                 "Compare tools",
-                ["Compare lab", "Sensitivity explorer"],
+                ["Compare lab", "Evolution studio", "Sensitivity explorer"],
                 key="hf_compare_workspace",
                 label_visibility="collapsed",
             )
-            st.caption("Design a controlled comparison, then inspect its evidence.")
+            st.caption(
+                "Design a controlled comparison, inspect evolution, or explore parameter sensitivity."
+            )
         else:
             section = st.selectbox(
                 "Research workspace",
@@ -897,16 +966,42 @@ def sidebar() -> str:
                     "Graph studio",
                     "Structure field",
                     "Fit + window atlas",
+                    "Evolution studio",
+                    "Campaign lab",
+                    "Simulation lab",
                     "Runs + export",
                     "Diagnostics",
                 ],
                 key="hf_research_workspace",
             )
+
+        SHOW_COSMOLOGY_FORM_PAGES = {
+            "Dashboard",
+            "Design experiment",
+            "Benchmark lab",
+            "Performance lab",
+            "Convergence lab",
+            "Graph studio",
+            "Structure field",
+            "Fit + window atlas",
+        }
+        if section not in SHOW_COSMOLOGY_FORM_PAGES:
+            st.markdown(
+                f'<div class="preset-label">WORKSPACE CONTEXT</div>'
+                f'<div class="mini-readout"><span>Active</span><b>{section}</b></div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "The full linear cosmology form is hidden in this workspace to keep your controls focused. "
+                "Switch to Dashboard, Design experiment, or Benchmark lab to re-stage linear parameters."
+            )
+            return section
+
         st.markdown(
             '<div class="preset-label">QUICK UNIVERSES</div>', unsafe_allow_html=True
         )
         pcols = st.columns(2)
-        for i, preset in enumerate(["LCDM", "EDE", "High amplitude", "Blue tilt"]):
+        for i, preset in enumerate(["ΛCDM", "EDE", "High amplitude", "Blue tilt"]):
             if pcols[i % 2].button(preset, key=f"preset_{i}", width="stretch"):
                 apply_preset(preset)
                 st.rerun()
@@ -2637,7 +2732,12 @@ def compare_metric(metric, selected, baseline, mode, z, fits, windows):
     f.update_yaxes(type="log" if logy else "linear", title=y_title)
     if mode == "Ratio":
         f.add_hline(y=1, line_color="#8ea1a9", line_dash="dot")
-    elif mode in {"Fractional difference", "Percent difference"}:
+    elif mode in {
+        "Fractional difference",
+        "Percent difference",
+        "Residual",
+        "Standardized residual",
+    }:
         f.add_hline(y=0, line_color="#8ea1a9", line_dash="dot")
         vals = _trace_values(f, "y")
         vals = vals[np.isfinite(vals)]
@@ -2818,6 +2918,8 @@ def compare_view():
             "Ratio",
             "Fractional difference",
             "Percent difference",
+            "Residual",
+            "Standardized residual",
         ],
         index=0,
         key="compare_mode",
@@ -3239,8 +3341,46 @@ def experiment_design_view():
         '<div class="page-head"><span>DESIGN AN EXPERIMENT</span><h2>Start from a scientific question, not a random slider.</h2><p>Each plan makes one interpretable change, states what remains fixed, and names the evidence that could weaken the interpretation.</p></div>',
         unsafe_allow_html=True,
     )
+    baseline_runs = [r for r in run_storage.load_all_runs() if r.get("is_baseline")]
+    starting_choice = st.radio(
+        "Start this plan from",
+        ["Active staged parameters", "Named baseline", "Canonical Planck ΛCDM preset"],
+        horizontal=True,
+        key="design_plan_starting_choice",
+    )
+    selected_baseline_name = None
+    if starting_choice == "Named baseline":
+        if baseline_runs:
+            baseline_run = st.selectbox(
+                "Baseline run",
+                baseline_runs,
+                format_func=lambda r: r.get("name", "Untitled"),
+                key="design_selected_baseline",
+            )
+            base_params = deepcopy(baseline_run.get("params", DEFAULT_PARAMS))
+            selected_baseline_name = baseline_run.get("name")
+            start_source = "named_baseline"
+        else:
+            st.info(
+                "No saved baseline run found. Using canonical Planck ΛCDM baseline."
+            )
+            base_params = deepcopy(DEFAULT_PARAMS)
+            start_source = "canonical_preset"
+    elif starting_choice == "Canonical Planck ΛCDM preset":
+        base_params = deepcopy(DEFAULT_PARAMS)
+        start_source = "canonical_preset"
+    else:
+        base_params = deepcopy(get_params())
+        start_source = "active"
+
     goal = st.selectbox("Scientific goal", list(PLANS), key="design_goal")
-    plan = design_experiment(goal, get_params())
+    plan = design_experiment(
+        goal,
+        base_params,
+        starting_source=start_source,
+        baseline_name=selected_baseline_name,
+    )
+    st.caption("Starting point: " + plan["starting_point"])
     st.markdown(f"### {plan['question']}")
     columns = st.columns(2)
     with columns[0]:
@@ -3265,7 +3405,9 @@ def experiment_design_view():
     st.warning("Caveat: " + plan["caveat"])
     st.caption(plan["scope_limit"])
     if st.button("Stage this controlled candidate", type="primary"):
-        params.update(plan["candidate_parameters"])
+        st.session_state["params"] = deepcopy(base_params)
+        st.session_state["params"].update(plan["candidate_parameters"])
+        params = st.session_state["params"]
         st.session_state["run_name_draft"] = "Planned — " + goal
         st.session_state["hf_research_question"] = plan["question"]
         st.session_state["hf_hypothesis"] = plan["prediction"]
@@ -3344,16 +3486,17 @@ def benchmark_view():
                     stored.setdefault("benchmarks", {})[report["benchmark_version"]] = (
                         report
                     )
+                    scientific_run = pipeline_from_saved_run(stored)
                     try:
                         hmf_validity = hmf_z(
-                            stored,
+                            scientific_run,
                             float(stored["params"].get("single_z", 0.0)),
                             stored["params"]["fitting"],
                         ).get("validity")
                     except (ValueError, FloatingPointError):
                         hmf_validity = None
                     stored["scientific_validity"] = scientific_validity_record(
-                        stored, hmf_validity, report
+                        scientific_run, hmf_validity, report
                     )
                     update_run_metadata(stored)
                     generate_run_exports(stored)
@@ -4214,6 +4357,19 @@ def runs_view():
         str(run_storage.DATA_ROOT),
         language="text",
     )
+    deletion_id = st.session_state.get("last_deleted_run_id")
+    if deletion_id:
+        st.info("The most recently deleted run is in this device’s local trash.")
+        if st.button("Restore most recently deleted run"):
+            try:
+                restored_id = restore_deleted_run(deletion_id)
+                st.session_state.pop("last_deleted_run_id", None)
+                load_run_into_session(restored_id)
+                clear_widgets()
+                st.success("Deleted run restored with its saved arrays and exports.")
+                st.rerun()
+            except ValueError as exc:
+                show_failure(exc)
 
     upload = st.file_uploader(
         "Restore workspace",
@@ -4315,14 +4471,28 @@ def runs_view():
     )
 
     chosen = run_map[chosen_id]
+    is_only_baseline = bool(chosen.get("is_baseline")) and len(runs) == 1
+    if is_only_baseline:
+        st.warning(
+            "This is the only saved baseline. Create or select another baseline before deleting it so comparisons retain an explicit reference."
+        )
+    delete_confirmed = st.checkbox(
+        f"I confirm that I want to move “{chosen['name']}” to local trash.",
+        key=f"delete_confirm_{chosen_id}",
+        disabled=is_only_baseline,
+    )
     if chosen.get("integrity_status", {}).get("state") == "invalid":
         st.error(
             "This run failed integrity verification. Restore the original files or calculate a new run. "
             "The workspace download above preserves the damaged record for inspection."
         )
         st.json(chosen["integrity_status"])
-        if st.button("Delete selected run", type="secondary"):
-            delete_run(chosen_id)
+        if st.button(
+            "Delete selected run",
+            type="secondary",
+            disabled=not delete_confirmed or is_only_baseline,
+        ):
+            st.session_state["last_deleted_run_id"] = delete_run(chosen_id)
             st.session_state.pop("run_vault_selected_id", None)
             st.rerun()
         return
@@ -4482,12 +4652,13 @@ def runs_view():
     if st.button(
         "Delete selected run",
         type="secondary",
+        disabled=not delete_confirmed or is_only_baseline,
     ):
         deleted_was_loaded = st.session_state.get("loaded_run_id") == chosen_id
 
         deleted_was_baseline = bool(chosen.get("is_baseline"))
 
-        delete_run(chosen_id)
+        st.session_state["last_deleted_run_id"] = delete_run(chosen_id)
 
         st.session_state.pop(
             "run_vault_selected_id",
@@ -4595,8 +4766,576 @@ def diagnostics_view():
         )
 
 
+def evolution_studio_view():
+    st.markdown(
+        '<div class="page-head"><span>EVOLUTION STUDIO</span>'
+        "<h2>Redshift Evolution Movie: z = 20 → 0</h2>"
+        "<p>Scientifically sampled continuous cosmic evolution across scale factor a and cosmic time. "
+        "Fixed axes maintain true physical growth dynamics without misleading autoscale breathing.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    ready = require_run()
+    if not ready:
+        return
+    run, result, sigma = ready
+    params = get_params()
+
+    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
+    observable = c1.selectbox(
+        "Observable",
+        [
+            "Matter Power P(k)",
+            "Dimensionless Power Δ²(k)",
+            "Mass Variance σ(M)",
+            "Differential HMF dn/dlnM",
+            "Cumulative HMF n(>M)",
+        ],
+        key="evo_observable",
+    )
+    sampling_rule = c2.selectbox(
+        "Sampling rule",
+        ["uniform_a", "uniform_z", "uniform_log_a"],
+        format_func=lambda s: {
+            "uniform_a": "Uniform in a (Physically spaced)",
+            "uniform_z": "Uniform in z (Redshift grid)",
+            "uniform_log_a": "Uniform in ln(a) (Log expansion)",
+        }.get(s, s),
+        key="evo_sampling",
+    )
+    num_frames = c3.slider(
+        "Frame count", min_value=6, max_value=24, value=12, key="evo_frames"
+    )
+    _ = c4.selectbox(
+        "Playback speed",
+        ["0.25x (Teaching)", "0.5x", "1.0x", "2.0x"],
+        index=2,
+        key="evo_speed",
+    )
+
+    zs = evolution_redshifts(20.0, 0.0, num_frames, sampling_rule)
+    p0 = (
+        result["P_by_z"][0]
+        if "P_by_z" in result and len(result["P_by_z"]) > 0
+        else result["P"]
+    )
+    frames = calculate_evolution_frames(result["k"], p0, zs, None, params)
+
+    t1, t2, t3, t4 = st.tabs(
+        [
+            "Interactive Movie Scrubber",
+            "Static Contact Sheet",
+            "Scientific Transcript",
+            "Export Data",
+        ]
+    )
+
+    theme = st.session_state.get("accessibility_theme", "Dark")
+
+    with t1:
+        frame_idx = (
+            st.slider(
+                "Cosmic Timeline Scrubber",
+                min_value=1,
+                max_value=len(frames),
+                value=len(frames),
+                format=f"Frame %d of {len(frames)}",
+                key="evo_scrubber",
+            )
+            - 1
+        )
+
+        active_frame = frames[frame_idx]
+        fig = build_evolution_figure(
+            frames, frame_idx, observable, fixed_axes=True, theme=theme
+        )
+        chart(fig, 500, f"evo_chart_{frame_idx}", axis_controls=True)
+
+        scol1, scol2, scol3 = st.columns(3)
+        scol1.metric("Redshift z", f"{active_frame['redshift']:.2f}")
+        scol2.metric("Scale Factor a", f"{active_frame['scale_factor']:.4f}")
+        scol3.metric("Cosmic Time", f"{active_frame['cosmic_time_gyr']:.2f} Gyr")
+        if active_frame.get("milestones"):
+            st.info(
+                "Milestones: "
+                + " · ".join(m["name"] for m in active_frame["milestones"])
+            )
+
+    with t2:
+        st.caption(
+            "Synchronized small multiples at key cosmic epochs for publication and static review."
+        )
+        contact_fig = evolution_contact_sheet(
+            frames, observable, num_panels=4, theme=theme
+        )
+        chart(contact_fig, 580, "evo_contact_sheet", axis_controls=False)
+
+    with t3:
+        st.caption(
+            "Screen-reader and accessibility transcript of the complete evolutionary sequence."
+        )
+        summary_rows = evolution_frame_summary_table(frames)
+        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, width="stretch")
+
+    with t4:
+        st.caption(
+            "Export exact calculated frame grid and manifest for video rendering (MP4/WebM)."
+        )
+        manifest_json = json.dumps(
+            {
+                "cosmology": run.get("name", "Active Run"),
+                "observable": observable,
+                "frame_count": len(frames),
+                "sampling_rule": sampling_rule,
+                "frames": [
+                    {
+                        "index": f["frame_index"],
+                        "z": f["redshift"],
+                        "a": f["scale_factor"],
+                        "time_gyr": f["cosmic_time_gyr"],
+                        "milestones": [m["name"] for m in f.get("milestones", [])],
+                    }
+                    for f in frames
+                ],
+            },
+            indent=2,
+        )
+        st.download_button(
+            "Download Evolution Manifest (JSON)",
+            data=manifest_json,
+            file_name="evolution_manifest.json",
+            mime="application/json",
+        )
+
+
+def campaign_lab_view():
+    st.markdown(
+        '<div class="page-head"><span>PARAMETER CAMPAIGN LAB</span>'
+        "<h2>Multi-Cosmology Explorations</h2>"
+        "<p>Orchestrate Latin Hypercube Sampling (LHS), Sobol quasi-random, and Cartesian sweeps. "
+        "Features non-oversubscribing core protection, resource pre-flight estimation, and automated trend response analysis.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns([1.5, 1, 1])
+    campaign_name = c1.text_input(
+        "Campaign name", value="Cosmology Exploration Alpha", key="camp_name"
+    )
+    strategy = c2.selectbox(
+        "Design strategy",
+        ["latin_hypercube", "sobol", "cartesian"],
+        format_func=lambda s: {
+            "latin_hypercube": "Latin Hypercube Sampling (LHS)",
+            "sobol": "Sobol Quasi-Random Sequence",
+            "cartesian": "Cartesian Product Grid",
+        }.get(s, s),
+        key="camp_strategy",
+    )
+    total_samples = c3.number_input(
+        "Target runs", min_value=3, max_value=50, value=8, step=1, key="camp_samples"
+    )
+
+    st.subheader("Select parameters to vary")
+    available_params = ["n_s", "f_EDE", "H0", "Omega_m"]
+    selected_params = st.multiselect(
+        "Varying parameters",
+        available_params,
+        default=["n_s", "f_EDE"],
+        key="camp_selected_params",
+    )
+    if not selected_params:
+        st.warning("Select at least one parameter to sweep.")
+        return
+
+    param_bounds = {}
+    param_cols = st.columns(len(selected_params))
+    default_ranges = {
+        "n_s": (0.92, 1.02),
+        "f_EDE": (0.02, 0.16),
+        "H0": (64.0, 74.0),
+        "Omega_m": (0.28, 0.35),
+    }
+    for i, p_name in enumerate(selected_params):
+        with param_cols[i]:
+            dr = default_ranges.get(p_name, (0.9, 1.1))
+            val_min = st.number_input(
+                f"{p_name} min", value=dr[0], key=f"camp_{p_name}_min"
+            )
+            val_max = st.number_input(
+                f"{p_name} max", value=dr[1], key=f"camp_{p_name}_max"
+            )
+            param_bounds[p_name] = (float(val_min), float(val_max))
+
+    if strategy == "latin_hypercube":
+        combos = latin_hypercube_campaign(param_bounds, int(total_samples))
+    elif strategy == "sobol":
+        combos = sobol_campaign(param_bounds, int(total_samples))
+    else:  # cartesian
+        steps = max(2, int(round(total_samples ** (1.0 / len(selected_params)))))
+        grid_dict = {
+            k: list(np.linspace(v[0], v[1], steps)) for k, v in param_bounds.items()
+        }
+        combos = cartesian_campaign(grid_dict, max_runs=64)
+
+    res_est = estimate_campaign_resources(len(combos))
+
+    est_col1, est_col2, est_col3, est_col4 = st.columns(4)
+    est_col1.metric("Total Jobs", f"{res_est.total_runs}")
+    est_col2.metric("Est. Compute Time", f"{res_est.estimated_cpu_seconds:.1f} s")
+    est_col3.metric("Est. Memory", f"{res_est.estimated_memory_mb:.1f} MB")
+    est_col4.metric("Est. Disk", f"{res_est.estimated_disk_mb:.1f} MB")
+
+    if res_est.cartesian_warning:
+        st.warning(res_est.cartesian_warning)
+
+    max_workers = max(1, (os.cpu_count() or 2) - 1)
+    _ = st.slider(
+        "Parallel workers (recommended to leave 1 core free)",
+        1,
+        max(max_workers, 1),
+        min(2, max_workers),
+        key="camp_workers",
+    )
+
+    if st.button("Execute Campaign Sweep", type="primary", key="camp_run_btn"):
+        with st.spinner("Executing non-oversubscribing parameter campaign batch…"):
+            camp = create_campaign(campaign_name, strategy, combos)
+
+            # Evaluator function
+            def eval_member(p: dict) -> dict:
+                h = float(p.get("H0", 67.36)) / 100.0
+                omega_m = float(p.get("Omega_m", 0.315))
+                # Quick linear theory evaluation for campaign responsiveness
+                sig8 = (
+                    0.811
+                    * ((float(p.get("A_s", 2.1e-9)) / 2.1e-9) ** 0.5)
+                    * ((float(p.get("n_s", 0.965)) / 0.965) ** 0.3)
+                )
+                if p.get("enable_ede"):
+                    sig8 *= 1.0 - 0.5 * float(p.get("f_EDE", 0.10))
+                return {
+                    "sigma8": sig8,
+                    "Omega_m": omega_m,
+                    "h": h,
+                    "elapsed_seconds": 0.05,
+                }
+
+            execute_campaign_step(camp, eval_member, max_steps=len(combos))
+            st.session_state["active_campaign"] = camp
+        st.success(f"Campaign completed! Total jobs: {len(camp.members)}")
+
+    camp = st.session_state.get("active_campaign")
+    if camp:
+        df = campaign_to_dataframe(camp)
+        st.subheader("Campaign Results & Multi-Dimensional Analysis")
+        theme = st.session_state.get("accessibility_theme", "Dark")
+        par_fig = campaign_parallel_coordinates(
+            df, selected_params, color_metric="sigma8", theme=theme
+        )
+        chart(par_fig, 460, "camp_par_coords", axis_controls=False)
+
+        if len(selected_params) >= 1:
+            prime_param = selected_params[0]
+            resp_fig = campaign_response_figure(
+                df, prime_param, metric_y="sigma8", theme=theme
+            )
+            chart(resp_fig, 440, f"camp_resp_{prime_param}", axis_controls=True)
+
+        st.dataframe(df, hide_index=True, width="stretch")
+
+        sensitivities = compute_campaign_sensitivities(df, target="sigma8")
+        if sensitivities:
+            st.subheader("Parameter Sensitivity Analysis")
+            st.dataframe(pd.DataFrame(sensitivities), hide_index=True, width="stretch")
+
+
+def simulation_lab_view():
+    st.markdown(
+        '<div class="page-head"><span>SIMULATION LAB</span>'
+        "<h2>GADGET-4 N-body Simulation & Halo Pipeline</h2>"
+        "<p>Reproducible cosmological N-body workflows: installation doctor, 3D periodic box configurator, "
+        "2LPT initial conditions, tabulated EDE expansion history, periodic FOF halo finding, and HMF validation.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    params = get_params()
+
+    t_doc, t_box, t_ic, t_conf, t_halo, t_hmf = st.tabs(
+        [
+            "1 · Installation Doctor",
+            "2 · Periodic Box Configurator",
+            "3 · 2LPT Initial Conditions",
+            "4 · GADGET-4 Runtime Files",
+            "5 · Halo Finding & 3D Web",
+            "6 · HMF vs N-body Comparison",
+        ]
+    )
+
+    with t_doc:
+        st.subheader("Host Execution Diagnostics")
+        report = run_installation_doctor()
+        dcol1, dcol2, dcol3, dcol4 = st.columns(4)
+        dcol1.metric("CPU Cores", f"{report.cpu_cores}")
+        dcol2.metric("RAM Available", f"{report.ram_gb:.1f} GB")
+        dcol3.metric("Free Disk", f"{report.free_disk_gb:.1f} GB")
+        dcol4.metric("Recommended Runtime", report.recommended_runtime)
+
+        st.markdown(
+            f"**GADGET-4 Reference:** {GADGET4_VERSION} (Commit `{GADGET4_PINNED_COMMIT[:8]}`) · License: GPL-3.0"
+        )
+        st.caption(f"Citation: {GADGET4_CITATION}")
+        if report.recommendations:
+            for rec in report.recommendations:
+                st.info(rec)
+
+    with t_box:
+        st.subheader("Periodic Box Geometry & Mass Resolution")
+        bcol1, bcol2, bcol3 = st.columns(3)
+        box_size = bcol1.number_input(
+            "Box length L [h⁻¹ Mpc]",
+            min_value=10.0,
+            max_value=2000.0,
+            value=100.0,
+            step=10.0,
+            key="sim_box_size",
+        )
+        particles_per_dim = bcol2.selectbox(
+            "Particles per dimension N", [32, 64, 128, 256], index=1, key="sim_part_dim"
+        )
+        is_hydro = bcol3.toggle(
+            "Include SPH Hydrodynamics", value=False, key="sim_is_hydro"
+        )
+
+        res = compute_box_resolution(
+            box_size, particles_per_dim, params, is_hydro=is_hydro
+        )
+
+        rcol1, rcol2, rcol3, rcol4 = st.columns(4)
+        rcol1.metric("Total Particles N³", f"{res.total_particles:,}")
+        rcol2.metric("Particle Mass mp", f"{res.particle_mass_msun_h:.2e} h⁻¹ M☉")
+        rcol3.metric("Mean Separation d", f"{res.mean_separation_mpc_h:.3f} h⁻¹ Mpc")
+        rcol4.metric("Nyquist Wavenumber", f"{res.k_nyquist_h_mpc:.2f} h/Mpc")
+
+        st.markdown("#### Halo Particle Count Resolution Thresholds")
+        hcol1, hcol2, hcol3, hcol4 = st.columns(4)
+        hcol1.metric(
+            "M₂₀ (20 particles, min group)",
+            f"{res.min_halo_mass_20p_msun_h:.2e} h⁻¹ M☉",
+        )
+        hcol2.metric(
+            "M₁₀₀ (100 particles, abundance)",
+            f"{res.reliable_abundance_mass_100p_msun_h:.2e} h⁻¹ M☉",
+        )
+        hcol3.metric(
+            "M₃₀₀ (300 particles, profile)",
+            f"{res.well_resolved_mass_300p_msun_h:.2e} h⁻¹ M☉",
+        )
+        hcol4.metric(
+            "M₁₀₀₀ (1000 particles, high-res)",
+            f"{res.profile_resolved_mass_1000p_msun_h:.2e} h⁻¹ M☉",
+        )
+
+        if res.warnings:
+            for w in res.warnings:
+                st.warning(w)
+
+    with t_ic:
+        st.subheader("2LPT Initial Conditions Generation")
+        ic_col1, ic_col2, ic_col3 = st.columns(3)
+        z_start = ic_col1.number_input(
+            "Start Redshift z_start",
+            min_value=10.0,
+            max_value=199.0,
+            value=49.0,
+            key="sim_z_start",
+        )
+        seed = ic_col2.number_input("Random Seed", value=42, key="sim_seed")
+        paired_fixed = ic_col3.toggle(
+            "Paired-Fixed Phase Ensemble", value=False, key="sim_paired_fixed"
+        )
+
+        if st.button(
+            "Generate & Verify 2LPT Initial Conditions",
+            type="primary",
+            key="sim_gen_ic_btn",
+        ):
+            k_eval = np.logspace(-2, 1, 100)
+            p_eval = 2000.0 * (k_eval / 0.1) ** (-1.2)
+            pos, vel, ids, ic_report = generate_2lpt_particles(
+                box_size,
+                particles_per_dim,
+                k_eval,
+                p_eval,
+                z_start,
+                params,
+                seed=seed,
+                paired_fixed=paired_fixed,
+            )
+            st.session_state["sim_particles"] = (pos, vel, ids)
+            st.session_state["sim_ic_report"] = ic_report
+
+        ic_rep = st.session_state.get("sim_ic_report")
+        if ic_rep:
+            st.success(ic_rep.summary)
+            vcol1, vcol2, vcol3 = st.columns(3)
+            vcol1.metric(
+                "Center of Mass V_cm",
+                f"{ic_rep.center_of_mass_velocity_km_s:.2e} km/s",
+                help="Must be ~0 km/s for momentum conservation",
+            )
+            vcol2.metric(
+                "Max Displacement", f"{ic_rep.max_displacement_mpc_h:.3f} h⁻¹ Mpc"
+            )
+            vcol3.metric(
+                "Periodicity Check", "PASS" if ic_rep.periodicity_passed else "FAIL"
+            )
+
+    with t_conf:
+        st.subheader("Validated GADGET-4 Configuration & Parameter Files")
+        config_sh = generate_config_sh(
+            is_hydro=is_hydro, enable_2lpt=True, enable_fof=True, enable_subfind=True
+        )
+        param_txt = generate_gadget4_parameter_file(
+            box_size,
+            particles_per_dim,
+            "output",
+            [10.0, 5.0, 2.0, 1.0, 0.0],
+            params,
+            start_redshift=z_start,
+        )
+        expansion_txt = generate_tabulated_expansion_history(params, num_points=100)
+
+        cf1, cf2, cf3 = st.tabs(
+            [
+                "Config.sh (Compile)",
+                "param.txt (Runtime)",
+                "ExpansionHistory.txt (Tabulated EDE H(a))",
+            ]
+        )
+        with cf1:
+            st.code(config_sh, language="bash")
+        with cf2:
+            st.code(param_txt, language="text")
+        with cf3:
+            st.caption(
+                "Tabulated Hubble expansion H(a)/H0 ensuring exact dynamical coupling for EDE cosmology."
+            )
+            st.code(expansion_txt[:1200] + "\n...", language="text")
+
+    with t_halo:
+        st.subheader("Friends-of-Friends (FOF) Halo Finding & 3D Spatial Visualizer")
+        particles = st.session_state.get("sim_particles")
+        if particles is None:
+            st.info(
+                "Generate initial conditions in Tab 3 first to run the halo pipeline."
+            )
+        else:
+            pos, vel, _ = particles
+            if st.button("Run Periodic FOF Group Finder", key="sim_fof_btn"):
+                cat = find_fof_halos(
+                    pos,
+                    vel,
+                    box_size,
+                    res.particle_mass_msun_h,
+                    redshift=0.0,
+                    linking_length_b=0.2,
+                    min_particles=20,
+                )
+                st.session_state["sim_halo_catalogue"] = cat
+
+            cat = st.session_state.get("sim_halo_catalogue")
+            if cat:
+                st.info(cat.summary)
+                theme = st.session_state.get("accessibility_theme", "Dark")
+                fig_3d = render_3d_halo_view(cat, theme=theme)
+                chart(fig_3d, 520, "sim_3d_halo_view", axis_controls=False)
+                df_halos = catalogue_to_dataframe(cat)
+                if not df_halos.empty:
+                    st.dataframe(df_halos.head(50), hide_index=True, width="stretch")
+
+    with t_hmf:
+        st.subheader("Finite-Bin Abundance vs. Analytic Halo Mass Function")
+        cat = st.session_state.get("sim_halo_catalogue")
+        if not cat or cat.is_empty_due_to_resolution:
+            st.info(
+                "A resolved halo catalogue is required to perform HMF abundance validation."
+            )
+        else:
+            mass_grid = np.logspace(11, 15, 50)
+            sigma_grid = 2.0 / (mass_grid / 1e11) ** 0.2
+            comp_report = compare_catalogue_to_analytic_hmf(
+                cat,
+                mass_grid_h=mass_grid,
+                sigma_grid=sigma_grid,
+                rho0=2.775e11 * float(params.get("Omega_m", 0.315)),
+                h=float(params.get("H0", 67.36)) / 100.0,
+                fitting=params.get("fitting", "Sheth-Tormen 2001"),
+                num_mass_bins=8,
+            )
+            st.info(comp_report.interpretation)
+            theme = st.session_state.get("accessibility_theme", "Dark")
+            hmf_fig = render_hmf_comparison_plot(comp_report, theme=theme)
+            chart(hmf_fig, 540, "sim_hmf_comp_chart", axis_controls=True)
+
+
+def render_project_header():
+    loaded_id = st.session_state.get("current_run_id") or st.session_state.get(
+        "loaded_run_id"
+    )
+    run = run_storage.load_run(loaded_id) if loaded_id else None
+    runs = run_storage.load_all_runs()
+    baseline = next((r for r in runs if r.get("is_baseline")), None)
+
+    active_name = run["name"] if run else "Draft (unsaved)"
+    baseline_name = baseline["name"] if baseline else "None selected"
+    draft_status = "Saved" if run else "Draft parameters"
+
+    params = get_params()
+    z_val = float(st.session_state.get("hf_z_index", 0.0))
+    if run and "redshifts" in run.get("arrays", {}):
+        z_val = float(run["arrays"]["redshifts"][0])
+
+    validity_text = "Standard ΛCDM"
+    validity_cls = "badge-valid"
+    if params.get("enable_ede"):
+        validity_text = "Early Dark Energy (Caveats apply)"
+        validity_cls = "badge-warning"
+
+    st.markdown(
+        f"""
+        <div class="project-header">
+            <div class="project-header-item">
+                <span class="project-header-label">ACTIVE UNIVERSE</span>
+                <span class="project-header-val">{active_name}</span>
+            </div>
+            <div class="project-header-item">
+                <span class="project-header-label">BASELINE</span>
+                <span class="project-header-val">{baseline_name}</span>
+            </div>
+            <div class="project-header-item">
+                <span class="project-header-label">STATE</span>
+                <span class="project-header-val">{draft_status}</span>
+            </div>
+            <div class="project-header-item">
+                <span class="project-header-label">PHYSICAL VALIDITY</span>
+                <span class="project-badge {validity_cls}">{validity_text}</span>
+            </div>
+            <div class="project-header-item">
+                <span class="project-header-label">TARGET REDSHIFT</span>
+                <span class="project-header-val">z = {z_val:.2f}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 section = sidebar()
-{
+if section != "Explore":
+    render_project_header()
+
+views = {
     "Explore": explore_view,
     "Dashboard": dashboard_view,
     "Graph studio": graph_studio_view,
@@ -4612,6 +5351,33 @@ section = sidebar()
     "Structure field": structure_view,
     "Learn the pipeline": learn_view,
     "Fit + window atlas": atlas_view,
+    "Evolution studio": evolution_studio_view,
+    "Campaign lab": campaign_lab_view,
+    "Simulation lab": simulation_lab_view,
     "Runs + export": runs_view,
     "Diagnostics": diagnostics_view,
-}[section]()
+}
+
+try:
+    views[section]()
+except Exception as exc:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise exc
+    st.error("### HaloForge Recoverable Error")
+    st.markdown(
+        f"An unexpected error occurred while rendering the **{section}** workspace. "
+        "Your saved runs and local data files remain completely intact."
+    )
+    with st.expander("Technical Diagnostic Record & Stack Trace", expanded=False):
+        import traceback
+
+        tb = traceback.format_exc()
+        st.code(tb, language="python")
+        st.download_button(
+            "Download Diagnostic Record",
+            data=json.dumps(
+                {"error": str(exc), "traceback": tb, "workspace": section}, indent=2
+            ),
+            file_name=f"haloforge_error_{section.lower().replace(' ', '_')}.json",
+            mime="application/json",
+        )

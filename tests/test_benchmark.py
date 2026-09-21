@@ -58,6 +58,35 @@ def test_internal_sigma8_benchmark_never_hides_a_failed_discrepancy():
     assert internal_sigma8_benchmark(run)["rows"][0]["status"] == "fail"
 
 
+def test_internal_sigma8_benchmark_accepts_the_durable_saved_run_shape():
+    k = np.geomspace(1e-5, 1e2, 1200)
+    power = 1e4 * k / (1 + (k / 0.2) ** 3)
+    h = 0.7
+    stored = np.sqrt(sigma_squared(8 / h, k, power, "Top-hat"))
+    saved = {
+        "params": {**DEFAULT_PARAMS, "H0": 70.0},
+        "derived": {"h": h},
+        "class_status": "AXICLASS",
+        "rho0": 1.0,
+        "window_type": "Top-hat",
+        "arrays": {
+            "k": k,
+            "P": power,
+            "P_by_z": np.array([power]),
+            "redshifts": np.array([0.0]),
+            "M_h": np.array([1e10, 1e11, 1e12]),
+            "M": np.array([1e10, 1e11, 1e12]),
+            "R": np.array([1.0, 2.0, 3.0]),
+            "sigma": np.array([2.0, 1.0, 0.5]),
+            "sigma_by_z": np.array([[2.0, 1.0, 0.5]]),
+            "dlnsigma_dlnM": np.array([-0.2, -0.2, -0.2]),
+            "dlnsigma_dlnM_by_z": np.array([[-0.2, -0.2, -0.2]]),
+            "sigma8_pipeline_by_z": np.array([stored]),
+        },
+    }
+    assert internal_sigma8_benchmark(saved)["rows"][0]["status"] in {"pass", "review"}
+
+
 def test_canonical_case_registry_covers_declared_regimes_without_claiming_external_outputs():
     identifiers = {case.identifier for case in CANONICAL_VALIDATION_CASES}
     assert {
