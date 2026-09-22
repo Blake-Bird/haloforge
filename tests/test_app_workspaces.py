@@ -20,6 +20,7 @@ WORKSPACES = [
     "Benchmark lab",
     "Performance lab",
     "Convergence lab",
+    "Simulation lab",
     "Known limitations",
     "Teach",
     "Learn the pipeline",
@@ -223,6 +224,10 @@ def test_simulation_lab_workspace_renders_without_exception(saved_app):
     ]
     # Check IC generator button exists
     assert any(b.key == "sim_gen_ic_btn" for b in saved_app.button)
+    assert any(metric.label == "Physics mode" for metric in saved_app.metric)
+    assert not any(
+        toggle.label == "Include SPH Hydrodynamics" for toggle in saved_app.toggle
+    )
 
 
 def test_project_header_renders_active_and_baseline(saved_app):
@@ -236,3 +241,53 @@ def test_project_header_renders_active_and_baseline(saved_app):
         "Synthetic run 0" in m.value or "Synthetic run 1" in m.value
         for m in saved_app.markdown
     )
+
+
+def test_fresh_research_visit_opens_dashboard_instead_of_an_empty_workspace(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.run()
+    assert not saved_app.exception, [
+        (error.message, error.stack_trace) for error in saved_app.exception
+    ]
+    assert saved_app.session_state["hf_research_workspace"] == "Dashboard"
+
+
+@pytest.mark.parametrize(
+    ("mode", "workspace"),
+    [
+        ("Research", "Graph studio"),
+        ("Research", "Teach"),
+        ("Compare", "Compare lab"),
+    ],
+)
+def test_command_navigation_handoff_updates_the_real_workspace_selector(
+    saved_app, mode, workspace
+):
+    """A palette action must not leave the page and its selector disagreeing."""
+    saved_app.session_state["hf_command_navigation"] = {
+        "primary_mode": mode,
+        "workspace": workspace,
+    }
+    saved_app.run()
+    assert not saved_app.exception, [
+        (error.message, error.stack_trace) for error in saved_app.exception
+    ]
+    assert saved_app.session_state["hf_primary_mode"] == mode
+    workspace_key = (
+        "hf_research_workspace" if mode == "Research" else "hf_compare_workspace"
+    )
+    assert saved_app.session_state[workspace_key] == workspace
+    assert not any("default value" in warning.value for warning in saved_app.warning)
+
+
+def test_prepared_teaching_module_opens_its_matching_guided_experiment(saved_app):
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Teach"
+    saved_app.run()
+    saved_app.button(key="launch_teaching_module_primordial-tilt").click().run()
+    assert not saved_app.exception, [
+        (error.message, error.stack_trace) for error in saved_app.exception
+    ]
+    assert saved_app.session_state["hf_primary_mode"] == "Explore"
+    assert saved_app.selectbox(key="guided_experiment").value == "More small-scale power"
+    assert any("Teaching module ready" in message.value for message in saved_app.success)

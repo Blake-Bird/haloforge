@@ -39,6 +39,13 @@ def test_real_solver_sigma8_growth_and_all_windows(real_lcdm):
     params, power = real_lcdm
     assert power["background_warning"] == ""
     assert power["solver_execution"]["isolation"] == "dedicated subprocess worker"
+    assert power["solver_execution"]["worker_module"] == "engine.class_worker"
+    assert power["solver_execution"]["requested_redshifts"] == [0.0, 2.0, 10.0]
+    assert "stdout" in power["solver_execution"]
+    assert "stderr" in power["solver_execution"]
+    assert power["cosmic_time_warning"] == ""
+    assert power["background_cosmic_time_gyr_by_z"].shape == power["redshifts"].shape
+    assert np.all(np.diff(power["background_cosmic_time_gyr_by_z"]) < 0)
     for window in ("Top-hat", "Gaussian", "Sharp-k"):
         sigma = compute_sigma_result(power, dict(params, window_type=window))
         assert np.isfinite(sigma["sigma_by_z"]).all()
@@ -62,6 +69,8 @@ def test_real_ede_changes_spectrum_and_preserves_background(real_lcdm):
     assert power["class_status"] == "AXICLASS"
     assert power["background_warning"] == ""
     assert power["background_omega_m_by_z"].shape == power["redshifts"].shape
+    assert power["cosmic_time_warning"] == ""
+    assert power["background_cosmic_time_gyr_by_z"].shape == power["redshifts"].shape
     assert not np.allclose(power["P_by_z"], reference["P_by_z"], rtol=0.01)
     sigma = compute_sigma_result(power, params)
     assert sigma["sigma8_pipeline_by_z"][0] == pytest.approx(

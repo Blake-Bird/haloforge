@@ -23,7 +23,7 @@ from engine.hmf import cumulative_hmf
 from engine.redshift import redshift_index
 from engine.fingerprint import cosmic_fingerprint, fingerprint_markdown
 from state.run_model import RUN_COLORS
-from state.provenance import file_sha256, reproducibility_hash
+from state.provenance import file_sha256, reproducibility_hash, solver_binding_provenance
 from state.notebook import normalize_notebook_entry
 from state.storage_policy import default_data_root, require_safe_persistent_storage
 from state.schema import RUN_STORAGE_SCHEMA_VERSION, migrate_run_document
@@ -739,6 +739,17 @@ def generate_run_exports(run: dict) -> dict:
     )
     files["class_settings.json"] = str(class_path)
 
+    solver_execution = run.get("solver_execution", {})
+    solver_execution_path = export_dir / "solver_execution.json"
+    _atomic_write_text(
+        solver_execution_path, json.dumps(solver_execution, indent=2, default=str)
+    )
+    files["solver_execution.json"] = str(solver_execution_path)
+    for stream in ("stdout", "stderr"):
+        stream_path = export_dir / f"solver_{stream}.txt"
+        _atomic_write_text(stream_path, str(solver_execution.get(stream, "")))
+        files[f"solver_{stream}.txt"] = str(stream_path)
+
     provenance_path = export_dir / "provenance.json"
     _atomic_write_text(
         provenance_path, json.dumps(run.get("provenance", {}), indent=2, default=str)
@@ -953,6 +964,9 @@ def export_status(run: dict) -> list[dict]:
         "params.json",
         "derived.json",
         "class_settings.json",
+        "solver_execution.json",
+        "solver_stdout.txt",
+        "solver_stderr.txt",
         "provenance.json",
         "notebook.json",
         "audit_trail.json",
@@ -1478,26 +1492,79 @@ def python_recreation_script(run: dict) -> str:
     settings = json.dumps(
         run.get("class_settings", {}), indent=2, sort_keys=True, default=str
     )
-    return (
-        '''#!/usr/bin/env python3
+    execution = run.get("solver_execution") or run.get("arrays", {}).get(
+        "solver_execution", {}
+    )
+    binding = run.get("provenance", {}).get("solver_binding", {}) or solver_binding_provenance(
+        execution
+    )
+    worker_python = str(
+        binding.get("worker_python", execution.get("worker_python", ""))
+    )
+    worker_sha256 = str(binding.get("worker_python_sha256", "unavailable"))
+    classy_binding_sha256 = str(
+        binding.get("classy_binding_sha256", "unavailable")
+    )
+    return f'''#!/usr/bin/env python3
 """Recreate the stored AxiCLASS linear P(k) sample for this HaloForge run."""
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import numpy as np
 
-SETTINGS = json.loads('''
-        + repr(settings)
-        + """)
+SETTINGS = json.loads({settings!r})
 ROOT = Path(__file__).resolve().parent
 REDSHIFT = float(json.loads((ROOT / "params.json").read_text()).get("single_z", 0.0))
+RECORDED_WORKER = {worker_python!r}
+RECORDED_WORKER_SHA256 = {worker_sha256!r}
+RECORDED_CLASSY_SHA256 = {classy_binding_sha256!r}
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+# The app may have used a dedicated AxiCLASS interpreter rather than the
+# interpreter that launches this portable script. Re-exec under that recorded
+# worker once, so ``python recreate.py`` remains a one-command reproduction.
+if os.environ.get("HALOFORGE_RECREATION_WORKER") != "1" and RECORDED_WORKER:
+    worker = Path(RECORDED_WORKER)
+    if not worker.is_file():
+        raise SystemExit(
+            "The recorded AxiCLASS interpreter is unavailable: " + RECORDED_WORKER
+            + ". Install the build identified in provenance.json, then rerun."
+        )
+    if RECORDED_WORKER_SHA256 != "unavailable" and sha256(worker) != RECORDED_WORKER_SHA256:
+        raise SystemExit(
+            "The interpreter at the recorded AxiCLASS path does not match its saved SHA-256. "
+            "Do not treat a substituted solver build as a reproduction."
+        )
+    if worker.resolve() != Path(sys.executable).resolve():
+        child_env = dict(os.environ, HALOFORGE_RECREATION_WORKER="1")
+        completed = subprocess.run([str(worker), str(Path(__file__).resolve())], env=child_env)
+        raise SystemExit(completed.returncode)
 
 try:
     from classy import Class
+    import classy
 except ImportError as exc:
     raise SystemExit("This export requires the AxiCLASS-compatible classy build recorded in provenance.json.") from exc
+
+if RECORDED_CLASSY_SHA256 != "unavailable":
+    binding_path = Path(getattr(classy, "__file__", ""))
+    if not binding_path.is_file() or sha256(binding_path) != RECORDED_CLASSY_SHA256:
+        raise SystemExit(
+            "The available classy binding does not match the saved AxiCLASS SHA-256. "
+            "Do not treat this as a reproducible calculation."
+        )
 
 stored = np.genfromtxt(ROOT / "power_spectrum.csv", delimiter=",", names=True)
 cosmo = Class()
@@ -1515,13 +1582,12 @@ try:
     reference = np.atleast_1d(stored["P_Mpc3"])
     recreated = np.asarray([row[1] for row in rows])
     fractional = np.abs(recreated / reference - 1.0)
-    print(f"max fractional P(k) discrepancy at z={REDSHIFT:g}: {fractional.max():.3e}")
+    print(f"max fractional P(k) discrepancy at z={{REDSHIFT:g}}: {{fractional.max():.3e}}")
     print("Interpret discrepancies using provenance.json; never discard a failed agreement.")
 finally:
     cosmo.struct_cleanup()
     cosmo.empty()
-"""
-    )
+'''
 
 
 def analysis_loader_snippets() -> dict[str, str]:

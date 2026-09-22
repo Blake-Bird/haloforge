@@ -18,6 +18,7 @@ ARRAY_KEYS = {
     "redshifts",
     "growth_class",
     "background_omega_m_by_z",
+    "background_cosmic_time_gyr_by_z",
 }
 
 

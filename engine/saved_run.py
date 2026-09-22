@@ -54,6 +54,9 @@ def pipeline_from_saved_run(saved: dict) -> dict:
                 )
             },
             "background_omega_m_by_z": arrays.get("background_omega_m_by_z", []),
+            "background_cosmic_time_gyr_by_z": arrays.get(
+                "background_cosmic_time_gyr_by_z", []
+            ),
         },
         "sigma_result": {
             "M_h": arrays["M_h"],

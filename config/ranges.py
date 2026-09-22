@@ -128,7 +128,7 @@ CONTROL_HELP = {
     "Omega_m": "Total matter density fraction today.",
     "Omega_b": "Baryon density fraction. Omega_cdm is computed as Omega_m - Omega_b.",
     "Omega_k": "Curvature density fraction. Used in the derived dark-energy closure check.",
-    "N_eff": "Effective number of relativistic neutrino species, used in Omega_r.",
+    "N_eff": "Mapped directly to CLASS/AxiCLASS N_ur: massless relativistic species used in Omega_r. This interface does not model massive neutrino species.",
     "Tcmb": "CMB temperature today, used in the radiation-density estimate.",
     "tau_reio": "Optical depth to reionization. CLASS uses this when computing the matter power spectrum.",
     "enable_ede": "Turns the Early Dark Energy parameter block on for CLASS settings when available.",

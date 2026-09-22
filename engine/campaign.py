@@ -18,8 +18,9 @@ class CampaignResourceEstimate:
     """Estimated resource requirements for a parameter campaign."""
 
     total_runs: int
-    estimated_cpu_seconds: float
-    estimated_wall_seconds: float
+    estimated_cpu_seconds: float | None
+    estimated_wall_seconds: float | None
+    timing_basis: str
     recommended_workers: int
     estimated_memory_mb: float
     estimated_disk_mb: float
@@ -30,16 +31,29 @@ def estimate_campaign_resources(
     total_runs: int,
     *,
     worker_count: int | None = None,
-    seconds_per_run: float = 1.25,
+    seconds_per_run: float | None = None,
 ) -> CampaignResourceEstimate:
-    """Estimate CPU, memory, disk, and wall time with core-oversubscription guard."""
+    """Estimate resources without inventing solver timing evidence.
+
+    Wall-time fields are populated only with a positive measured per-member
+    duration supplied by the caller. Memory and disk remain planning estimates
+    and are labelled as such in the UI.
+    """
     cpu_cores = os.cpu_count() or 4
     recommended_workers = max(1, cpu_cores - 1)
     workers = worker_count or recommended_workers
     workers = max(1, min(workers, cpu_cores))
 
-    total_cpu_seconds = total_runs * seconds_per_run
-    wall_seconds = total_cpu_seconds / workers
+    if seconds_per_run is None:
+        total_cpu_seconds = None
+        wall_seconds = None
+        timing_basis = "No completed local CLASS/AxiCLASS members are available for timing calibration."
+    else:
+        if not np.isfinite(seconds_per_run) or seconds_per_run <= 0:
+            raise ValueError("seconds_per_run must be positive when supplied")
+        total_cpu_seconds = total_runs * seconds_per_run
+        wall_seconds = total_cpu_seconds / workers
+        timing_basis = f"Median of completed local CLASS/AxiCLASS member timings: {seconds_per_run:.2f} s/member."
 
     # Approx 25MB RAM per active solver worker, ~0.8MB disk per saved run archive
     est_memory_mb = 120.0 + workers * 35.0
@@ -56,6 +70,7 @@ def estimate_campaign_resources(
         total_runs=total_runs,
         estimated_cpu_seconds=total_cpu_seconds,
         estimated_wall_seconds=wall_seconds,
+        timing_basis=timing_basis,
         recommended_workers=recommended_workers,
         estimated_memory_mb=est_memory_mb,
         estimated_disk_mb=est_disk_mb,

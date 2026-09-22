@@ -21,6 +21,7 @@ from config.ranges import CONTROL_RANGES
 from engine.class_runner import (
     ClassRuntimeError,
     build_class_settings,
+    compute_matter_power,
     environment_diagnostics,
     tiny_class_smoke_test,
 )
@@ -57,6 +58,7 @@ from engine.benchmark import (
 from engine.saved_run import pipeline_from_saved_run
 from engine.performance import PERFORMANCE_BENCHMARK_VERSION, profile_core_pipeline
 from engine.figure_recipes import RECIPES, apply_figure_recipe, apply_chart_theme
+from engine.navigation import command_index, search_commands
 from engine.uncertainty import uncertainty_inventory
 from engine.experiment_design import PLANS, design_experiment
 from engine.plot_insights import (
@@ -76,6 +78,7 @@ from engine.structure import (
 )
 from content.modules import (
     MODULES,
+    guided_experiment_for_module,
     get_module,
     instructor_guide,
     lecture_outline,
@@ -93,6 +96,14 @@ from content.concepts import CONCEPTS, concept_by_label
 from content.limitations import LIMITATIONS_VERSION, limitations_rows
 from content.skepticism import EXERCISES, get_exercise
 import state.run_storage as run_storage
+from state.campaign_storage import (
+    campaign_export_bundle,
+    completed_member_timings,
+    list_campaign_ids,
+    load_campaign,
+    save_campaign,
+)
+from state.catalogue_storage import save_fof_catalogue
 from state.run_storage import (
     delete_run,
     duplicate_run,
@@ -153,6 +164,12 @@ from engine.evolution_studio import (
     evolution_contact_sheet,
     evolution_frame_summary_table,
 )
+from engine.evolution_video import VIDEO_FORMATS, render_evolution_video
+from engine.scientific_status import (
+    CALCULATED_LINEAR_THEORY,
+    STATUS_LABELS,
+    weakest_status,
+)
 from engine.campaign import (
     cartesian_campaign,
     estimate_campaign_resources,
@@ -164,8 +181,13 @@ from engine.campaign_orchestrator import (
     campaign_response_figure,
     campaign_to_dataframe,
     compute_campaign_sensitivities,
+    campaign_counts,
+    cancel_pending_members,
     create_campaign,
     execute_campaign_step,
+    pause_campaign,
+    resume_campaign,
+    retry_failed_members,
 )
 from engine.nbody_setup import (
     compute_box_resolution,
@@ -174,18 +196,22 @@ from engine.gadget4_adapter import (
     run_installation_doctor,
     generate_config_sh,
     generate_gadget4_parameter_file,
-    generate_tabulated_expansion_history,
+    generate_output_times_file,
     GADGET4_VERSION,
     GADGET4_PINNED_COMMIT,
     GADGET4_CITATION,
 )
-from engine.ic_generator import (
-    generate_2lpt_particles,
-)
+from engine.ic_generator import generate_zeldovich_particles
 from engine.halo_catalogue import (
     find_fof_halos,
     catalogue_to_dataframe,
     render_3d_halo_view,
+)
+from engine.gadget_snapshot import load_gadget4_dm_snapshot
+from engine.simulation_manifest import (
+    load_and_validate_snapshot_manifest,
+    manifest_path_for_snapshot,
+    write_snapshot_manifest,
 )
 from engine.hmf_nbody_comparison import (
     compare_catalogue_to_analytic_hmf,
@@ -289,9 +315,9 @@ PARAM_INFO = {
         "curvature",
     ),
     "N_eff": (
-        "Relativistic species N_eff",
-        "Sets the effective early radiation content beyond photons.",
-        "More radiation delays matter–radiation equality and changes early-time processing of perturbations.",
+        "Massless relativistic species N_ur",
+        "Passed directly to CLASS/AxiCLASS as N_ur and used for the radiation-density estimate.",
+        "This is not a full massive-neutrino-sector model. More massless radiation delays equality and changes early-time processing.",
         "radiation",
     ),
     "Tcmb": (
@@ -535,7 +561,10 @@ def chart(
         sum(1 for trace in fig.data if getattr(trace, "showlegend", True) is not False)
         > 1
     )
-    bottom = 98 if show_legend else 62
+    # Keep the legend outside the data rectangle. Long immutable run names are
+    # common in comparison figures; the former small margin let them compete
+    # with the x-axis at narrow analysis widths.
+    bottom = 142 if show_legend else 62
     fig.update_layout(
         height=height,
         margin=dict(l=70, r=28, t=84, b=bottom),
@@ -557,11 +586,11 @@ def chart(
             bordercolor="#2b3d45",
             borderwidth=1,
             orientation="h",
-            y=-0.20,
+            y=-0.34,
             yanchor="top",
             x=0,
             xanchor="left",
-            font=dict(size=10),
+            font=dict(size=9),
             tracegroupgap=4,
         ),
         showlegend=show_legend,
@@ -703,11 +732,12 @@ def chart(
     if caption:
         st.caption(caption)
     if mislead:
-        st.caption(f"What can mislead you: {mislead}")
+        with st.expander("Interpretation limits"):
+            st.caption(mislead)
     transcript = chart_transcript(fig)
-    with st.expander("Accessible chart transcript"):
+    with st.expander("Data table & download"):
         st.caption(
-            "A table alternative to hover interactions. Values are the plotted samples; use the exported run bundle for full provenance and arrays."
+            "Plotted samples for inspection, reuse, keyboard access, and CSV export. Use the run bundle for complete provenance and arrays."
         )
         if transcript.empty:
             st.info("This chart has no pointwise data transcript.")
@@ -727,11 +757,11 @@ def info_label(key: str, title: str | None = None) -> None:
     # Native disclosure is keyboard and touch operable; the former hover-only
     # card hid teaching content from non-pointer users.
     with st.expander(f"Physics guide — {title or heading}", expanded=False):
-        st.caption("PHYSICS GUIDE")
+        st.caption("PHYSICS GUIDE · schematic, not an evolving simulation")
         st.markdown(f"#### {heading}")
         st.markdown(VISUALS[kind], unsafe_allow_html=True)
-        st.write(meaning)
-        st.info(downstream)
+        st.caption(meaning)
+        st.caption(f"**Downstream:** {downstream}")
 
 
 def slider(key: str, title: str | None = None) -> None:
@@ -773,6 +803,8 @@ def apply_accessibility_preferences() -> None:
         [data-testid="stHeader"]{background:rgba(247,248,246,.9)!important}
         .hero,.lesson-card,.empty,div[data-testid="stMetric"],div[data-testid="stExpander"]{background:#fff!important;border:1px solid #c9d5d6!important}
         .hero h1,.page-head h2,.empty b{color:#132126!important}
+        [data-testid="stAlert"]{background:#eef5f4!important;border:1px solid #95b8b8!important;color:#132126!important}
+        [data-testid="stAlert"] *{color:#132126!important}
         .js-plotly-plot{filter:none}
         [data-testid="stDataFrame"],[data-testid="stTable"]{background:#ffffff!important;color:#132126!important;border-color:#b7c2c3!important}
         [data-testid="stDataFrame"] *{color:#132126!important}
@@ -884,6 +916,22 @@ def sidebar() -> str:
             st.session_state["hf_primary_mode"] = "Research"
             st.session_state["hf_research_workspace"] = "Benchmark lab"
             save_draft_params(params)
+    pending_navigation = st.session_state.pop("hf_command_navigation", None)
+    if isinstance(pending_navigation, dict):
+        primary_mode = pending_navigation.get("primary_mode")
+        if primary_mode in {"Explore", "Compare", "Research"}:
+            st.session_state["hf_primary_mode"] = primary_mode
+        workspace = pending_navigation.get("workspace")
+        if isinstance(workspace, str):
+            if primary_mode == "Compare":
+                st.session_state["hf_compare_workspace"] = workspace
+            elif primary_mode == "Research":
+                st.session_state["hf_research_workspace"] = workspace
+    command_run_id = st.session_state.pop("hf_command_load_run_id", None)
+    if command_run_id:
+        # A command result contains only a durable run ID.  The established
+        # session loader performs integrity checks before arrays become active.
+        load_run_into_session(str(command_run_id))
     with st.sidebar:
         # A guided outcome may choose a next route.  Apply this before the
         # widgets are instantiated so Streamlit navigates on the next rerun.
@@ -958,6 +1006,45 @@ def sidebar() -> str:
                     clear_local_diagnostics(run_storage.DATA_ROOT)
                     st.success("Local diagnostic history deleted.")
         apply_accessibility_preferences()
+
+        def open_command(command: dict) -> None:
+            """Apply a palette command at a widget callback boundary."""
+            run_id = command.get("run_id")
+            if run_id:
+                # Defer the session hydration to the next render, before
+                # sidebar widgets are constructed.
+                st.session_state["hf_command_load_run_id"] = str(run_id)
+            # The target is applied at the start of the next script run,
+            # before the keyed Streamlit navigation widgets exist.  Writing
+            # their keys inside this callback can leave the selector's visible
+            # value behind the rendered workspace.
+            st.session_state["hf_command_navigation"] = {
+                "primary_mode": command["primary_mode"],
+                "workspace": command.get("workspace"),
+            }
+            st.session_state["hf_command_query"] = ""
+
+        with st.expander("Go to…", expanded=False):
+            st.caption(
+                "Search runs, figures, concepts, equations, experiments, and exports. Tab to a result and press Enter to open it."
+            )
+            command_query = st.text_input(
+                "Search HaloForge",
+                key="hf_command_query",
+                placeholder="Try ‘halo mass function’ or a run name",
+            )
+            command_records = command_index(concepts=CONCEPTS, runs=load_all_runs())
+            command_results = search_commands(command_query, command_records, limit=6)
+            for command in command_results:
+                st.button(
+                    command["title"],
+                    key="hf_command_" + command["identifier"],
+                    help=command["detail"],
+                    width="stretch",
+                    on_click=open_command,
+                    args=(command,),
+                )
+                st.caption(command["detail"])
         mode = st.radio(
             "Primary mode",
             ["Explore", "Compare", "Research"],
@@ -999,16 +1086,21 @@ def sidebar() -> str:
                 "Runs + export",
                 "Diagnostics",
             ]
-            current_sec = st.session_state.get("hf_research_workspace", "Dashboard")
-            idx = (
-                research_options.index(current_sec)
-                if current_sec in research_options
-                else 0
-            )
+            workspace_key = "hf_research_workspace"
+            current_sec = st.session_state.get(workspace_key)
+            # A fresh Research visit needs Dashboard as its conventional
+            # default. A pending quick action has already supplied a valid
+            # state value, where passing an index would instead compete with
+            # the keyed widget's selection.
+            if current_sec not in research_options:
+                st.session_state.pop(workspace_key, None)
+                workspace_index = 0
+            else:
+                workspace_index = None
             section = st.selectbox(
                 "Research workspace",
                 research_options,
-                index=idx,
+                index=workspace_index,
                 format_func=lambda s: {
                     "Dashboard": "🔬 Core · Dashboard",
                     "Graph studio": "🔬 Core · Graph Studio",
@@ -1048,8 +1140,7 @@ def sidebar() -> str:
                 unsafe_allow_html=True,
             )
             st.caption(
-                "The full linear cosmology form is hidden in this workspace to keep your controls focused. "
-                "Switch to Dashboard, Design experiment, or Benchmark lab to re-stage linear parameters."
+                "Linear controls are in Dashboard, Design experiment, and Benchmark lab."
             )
             return section
 
@@ -1062,7 +1153,7 @@ def sidebar() -> str:
                 apply_preset(preset)
                 st.rerun()
         st.caption(
-            "Presets load stable starting values. Nothing expensive runs until you press Run & auto-save."
+                "Presets load stable starting values. Nothing expensive runs until you press Calculate & save run."
         )
 
         with st.form("cosmology_controls", clear_on_submit=False):
@@ -1196,7 +1287,7 @@ def sidebar() -> str:
                 set(float(z) for z in [0, *selected_z, float(params["single_z"])])
             )
             submitted = st.form_submit_button(
-                "Run & auto-save", type="primary", width="stretch"
+                "Calculate & save run", type="primary", width="stretch"
             )
 
         reset_col, status_col = st.columns([1, 1.7])
@@ -1270,7 +1361,7 @@ def require_run():
     run = current_pipeline_run()
     if result is None or sigma is None or run is None:
         st.markdown(
-            '<div class="empty"><div class="empty-orbit"><i></i></div><b>Forge the first universe</b><span>Choose a preset or tune the staged controls, then press Run & auto-save. Completed runs persist in the local data folder.</span></div>',
+            '<div class="empty"><div class="empty-orbit"><i></i></div><b>Forge the first universe</b><span>Choose a preset or tune the staged controls, then press Calculate & save run. Completed runs persist in the local data vault.</span></div>',
             unsafe_allow_html=True,
         )
         return None
@@ -1394,13 +1485,29 @@ def _reset_guided_experiment() -> None:
 
 
 def explore_view():
+    requested_experiment = st.session_state.pop("teaching_experiment_request", None)
+    experiment_names = list(GUIDED_EXPERIMENTS)
+    # A teaching module supplies a requested experiment before this widget is
+    # created.  Using its index—not a late session-state write—keeps the
+    # visible selector and staged lesson in sync.
+    if requested_experiment in GUIDED_EXPERIMENTS:
+        st.session_state.pop("guided_experiment", None)
+        experiment_index = experiment_names.index(requested_experiment)
+    else:
+        experiment_index = 0
     experiment_name = st.selectbox(
         "Curated experiment",
-        list(GUIDED_EXPERIMENTS),
+        experiment_names,
+        index=experiment_index,
         key="guided_experiment",
         on_change=_reset_guided_experiment,
     )
     experiment = GUIDED_EXPERIMENTS[experiment_name]
+    launched_module = st.session_state.pop("teaching_launch_notice", None)
+    if launched_module:
+        st.success(
+            f"Teaching module ready: {launched_module}. Start with a prediction, then run this controlled comparison."
+        )
     st.markdown(
         '<div class="page-head"><span>GUIDED EXPERIMENT</span>'
         f"<h2>{experiment['question']}</h2>"
@@ -2385,12 +2492,18 @@ def dashboard_view():
     if stored:
         benchmark = stored.get("benchmarks", {}).get("haloforge-internal-sigma8-v1")
     validity = scientific_validity_record(run, hmf_validity, benchmark)
+    validity_label = {
+        "not_computed": "Not calculated",
+        "computed_needs_scientific_review": "Calculated — review numerical evidence",
+        "computed_with_unresolved_numerical_evidence": "Calculated — numerical evidence still unresolved",
+        "publication_ready": "Publication evidence recorded",
+    }.get(validity["overall_state"], "Scientific status needs review")
     st.caption(
-        f"Saved scientific validity state: `{validity['overall_state']}` · schema `{validity['schema_version']}`"
+        f"Scientific record: {validity_label}. Detailed claims and the versioned record are below."
     )
     with st.expander(
         "Scientific assurance — six different claims, not one confidence score",
-        expanded=True,
+        expanded=False,
     ):
         st.caption(
             "A calculation can be precise without being converged, calibrated, physically appropriate, or publication-ready."
@@ -2409,7 +2522,7 @@ def dashboard_view():
         point = inspect_mass_point(
             run, 10 ** float(p["selected_mass_exp"]), float(p["single_z"]), hmf_validity
         )
-        with st.expander("Inspect selected halo scale", expanded=True):
+        with st.expander("Inspect selected halo scale", expanded=False):
             st.caption(
                 f"Nearest saved mass to {point['requested_mass_hinv_msun']:.4g} h⁻¹ M☉. "
                 "Values below describe that saved sample; no mass interpolation is applied."
@@ -3315,6 +3428,7 @@ def sensitivity_view():
     except ValueError as exc:
         st.warning(str(exc))
         return
+
     st.caption(report["scope_limit"])
     if not report["rows"]:
         st.warning(
@@ -3446,6 +3560,21 @@ def experiment_design_view():
     )
     st.caption("Starting point: " + plan["starting_point"])
     st.markdown(f"### {plan['question']}")
+    ede_retention_requires_confirmation = bool(
+        start_source == "active"
+        and base_params.get("enable_ede")
+        and goal == "Tilt and low-mass structure"
+    )
+    retain_ede_confirmed = True
+    if ede_retention_requires_confirmation:
+        st.warning(
+            "Your active parameters include Early Dark Energy. This candidate would be **EDE + tilt**, not ΛCDM + tilt. "
+            "Choose the canonical ΛCDM starting point for a clean tilt experiment."
+        )
+        retain_ede_confirmed = st.checkbox(
+            "I intentionally want an EDE + tilt experiment and will interpret it as a two-physics scenario.",
+            key="design_confirm_ede_tilt",
+        )
     columns = st.columns(2)
     with columns[0]:
         st.markdown("#### Candidate parameter difference")
@@ -3468,7 +3597,25 @@ def experiment_design_view():
         st.markdown("\n".join(f"1. {item}" for item in plan["inspect"]))
     st.warning("Caveat: " + plan["caveat"])
     st.caption(plan["scope_limit"])
-    if st.button("Stage this controlled candidate", type="primary"):
+    with st.expander("Complete candidate cosmology", expanded=False):
+        st.caption("The full staged parameter set, including values inherited from the selected starting source.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"parameter": key, "value": value}
+                    for key, value in sorted(
+                        {**base_params, **plan["candidate_parameters"]}.items()
+                    )
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    if st.button(
+        "Stage this controlled candidate",
+        type="primary",
+        disabled=not retain_ede_confirmed,
+    ):
         st.session_state["params"] = deepcopy(base_params)
         st.session_state["params"].update(plan["candidate_parameters"])
         params = st.session_state["params"]
@@ -3690,7 +3837,7 @@ def convergence_view():
                 "maximum fractional σ change": payload.get(
                     "maximum_fractional_sigma_change"
                 ),
-                "mass at maximum [M☉]": payload.get("mass_at_maximum_Msun"),
+                "mass at maximum [h⁻¹ M☉]": payload.get("mass_at_maximum_Msun"),
                 "interpretation": "; ".join(payload.get("notes", []))
                 or payload.get("reason", ""),
             }
@@ -4031,6 +4178,20 @@ def teach_view():
     )
     st.markdown("### Live question")
     st.markdown(f"**{module.question}**")
+    target_experiment = guided_experiment_for_module(module)
+    if st.button(
+        f"Start this lab — {target_experiment}",
+        type="primary",
+        key=f"launch_teaching_module_{module.identifier}",
+        help="Open the matching prediction-led guided experiment. No calculation starts until you choose a prediction and run it.",
+    ):
+        st.session_state["teaching_experiment_request"] = target_experiment
+        st.session_state["teaching_launch_notice"] = module.title
+        st.session_state["hf_command_navigation"] = {
+            "primary_mode": "Explore",
+            "workspace": None,
+        }
+        st.rerun()
     tabs = st.tabs(
         [
             "Lecture mode",
@@ -4813,7 +4974,7 @@ def diagnostics_view():
                         "maximum fractional σ change": payload.get(
                             "maximum_fractional_sigma_change"
                         ),
-                        "mass at maximum [M☉]": payload.get("mass_at_maximum_Msun"),
+                        "mass at maximum [h⁻¹ M☉]": payload.get("mass_at_maximum_Msun"),
                         "notes": "; ".join(payload.get("notes", []))
                         or payload.get("reason", ""),
                     }
@@ -4821,13 +4982,33 @@ def diagnostics_view():
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     a, b = st.columns(2)
     with a:
-        st.subheader("Runtime")
-        st.json(diag)
+        st.subheader("Runtime summary")
+        runtime_rows = [
+            {"item": "CLASS worker", "value": diag["worker_executable"]},
+            {"item": "AxiCLASS available", "value": str(diag["classy_imports"])},
+            {"item": "Isolation", "value": diag["class_isolation"]},
+            {"item": "Timeout", "value": f"{diag['class_timeout_seconds']} seconds"},
+            {"item": "Retry limit", "value": str(diag["class_transient_retry_limit"])},
+            {"item": "Platform", "value": diag["platform"]},
+            {"item": "NumPy", "value": diag["numpy"]},
+        ]
+        st.dataframe(pd.DataFrame(runtime_rows), hide_index=True, width="stretch")
+        with st.expander("Full runtime diagnostic record"):
+            st.json(diag)
+            st.download_button(
+                "Download runtime diagnostic JSON",
+                data=json.dumps(diag, indent=2),
+                file_name="haloforge_runtime_diagnostics.json",
+                mime="application/json",
+                key="download_runtime_diagnostics",
+            )
     with b:
-        st.subheader("Next exact CLASS settings")
-        st.code(
-            json.dumps(build_class_settings(get_params()), indent=2), language="json"
-        )
+        st.subheader("Next CLASS calculation")
+        st.caption("The settings below will be sent to the next solver run.")
+        with st.expander("Inspect exact CLASS/AxiCLASS settings"):
+            st.code(
+                json.dumps(build_class_settings(get_params()), indent=2), language="json"
+            )
 
 
 def evolution_studio_view():
@@ -4843,7 +5024,9 @@ def evolution_studio_view():
     if not ready:
         return
     run, result, sigma = ready
-    params = get_params()
+    # The movie must remain bound to the saved calculation, not a newer staged
+    # draft that happens to be visible in the sidebar.
+    params = dict(run["params"])
 
     c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
     observable = c1.selectbox(
@@ -4870,7 +5053,7 @@ def evolution_studio_view():
     num_frames = c3.slider(
         "Frame count", min_value=6, max_value=24, value=12, key="evo_frames"
     )
-    _ = c4.selectbox(
+    playback_speed = c4.selectbox(
         "Playback speed",
         ["0.25x (Teaching)", "0.5x", "1.0x", "2.0x"],
         index=2,
@@ -4878,18 +5061,71 @@ def evolution_studio_view():
     )
 
     zs = evolution_redshifts(20.0, 0.0, num_frames, sampling_rule)
-    p0 = (
-        result["P_by_z"][0]
-        if "P_by_z" in result and len(result["P_by_z"]) > 0
-        else result["P"]
+    source_redshifts = np.asarray(result.get("redshifts", [0.0]), dtype=float)
+    source_power = np.asarray(result.get("P_by_z", [result["P"]]), dtype=float)
+    source_cosmic_time = np.asarray(
+        result.get("background_cosmic_time_gyr_by_z", []), dtype=float
     )
-    frames = calculate_evolution_frames(result["k"], p0, zs, None, params)
+    z0_source_index = redshift_index(source_redshifts, 0.0)
+    if source_redshifts.size < 2:
+        st.warning(
+            "This saved run has only one calculated redshift. Evolution frames would require an approximation, so add a redshift grid and rerun CLASS/AxiCLASS."
+        )
+        return
+    cosmic_time_by_frame = None
+    if source_cosmic_time.shape == source_redshifts.shape:
+        source_log_a = np.log(1.0 / (1.0 + source_redshifts))[::-1]
+        cosmic_time_by_frame = np.interp(
+            np.log(1.0 / (1.0 + zs)), source_log_a, source_cosmic_time[::-1]
+        )
+    elif params.get("enable_ede"):
+        st.warning(
+            "This historical EDE run has no stored solver background proper time. "
+            "Cosmic age is shown as unavailable rather than approximated; rerun to record it."
+        )
+    try:
+        frames = calculate_evolution_frames(
+            result["k"],
+            source_power[z0_source_index],
+            zs,
+            None,
+            params,
+            power_by_z=source_power,
+            source_redshifts=source_redshifts,
+            cosmic_time_gyr_by_z=cosmic_time_by_frame,
+        )
+    except ValueError as exc:
+        st.warning(
+            f"Evolution cannot be generated from this run: {exc} Add the requested redshift range to the CLASS/AxiCLASS run and calculate again."
+        )
+        return
+
+    evolution_status = weakest_status(
+        *(str(frame["scientific_status"]) for frame in frames)
+    )
+    if evolution_status != CALCULATED_LINEAR_THEORY:
+        validated = [
+            frame["interpolation_validation_median_fractional_error"]
+            for frame in frames
+            if frame["interpolation_validation_median_fractional_error"] is not None
+        ]
+        error_text = (
+            f" Withheld-spectrum interpolation checks have median fractional error "
+            f"{float(np.median(validated)):.2%}."
+            if validated
+            else " No withheld interior solver spectra are available to quantify interpolation error."
+        )
+        st.warning(
+            "Some movie frames are log P–log a interpolations between stored CLASS/AxiCLASS spectra, "
+            "so this export is labelled Approximation rather than calculated linear theory."
+            + error_text
+        )
 
     t1, t2, t3, t4 = st.tabs(
         [
             "Interactive Movie Scrubber",
             "Static Contact Sheet",
-            "Scientific Transcript",
+            "Frame Data",
             "Export Data",
         ]
     )
@@ -4918,7 +5154,14 @@ def evolution_studio_view():
         scol1, scol2, scol3 = st.columns(3)
         scol1.metric("Redshift z", f"{active_frame['redshift']:.2f}")
         scol2.metric("Scale Factor a", f"{active_frame['scale_factor']:.4f}")
-        scol3.metric("Cosmic Time", f"{active_frame['cosmic_time_gyr']:.2f} Gyr")
+        cosmic_time = active_frame.get("cosmic_time_gyr")
+        scol3.metric(
+            "Cosmic Time",
+            f"{float(cosmic_time):.2f} Gyr"
+            if cosmic_time is not None
+            else "Unavailable",
+        )
+        st.caption("Cosmic time source: " + active_frame["cosmic_time_source"])
         if active_frame.get("milestones"):
             st.info(
                 "Milestones: "
@@ -4936,18 +5179,19 @@ def evolution_studio_view():
 
     with t3:
         st.caption(
-            "Screen-reader and accessibility transcript of the complete evolutionary sequence."
+            "Exact per-frame redshift, scale factor, cosmic time, milestones, and spectrum-source records."
         )
         summary_rows = evolution_frame_summary_table(frames)
         st.dataframe(pd.DataFrame(summary_rows), hide_index=True, width="stretch")
 
     with t4:
         st.caption(
-            "Export exact calculated frame grid and manifest for video rendering (MP4/WebM)."
+            "Frames are rendered with fixed axes from this exact sequence. The manifest documents the scientific source and video settings."
         )
         manifest_json = json.dumps(
             {
                 "cosmology": run.get("name", "Active Run"),
+                "scientific_status": evolution_status,
                 "observable": observable,
                 "frame_count": len(frames),
                 "sampling_rule": sampling_rule,
@@ -4957,7 +5201,16 @@ def evolution_studio_view():
                         "z": f["redshift"],
                         "a": f["scale_factor"],
                         "time_gyr": f["cosmic_time_gyr"],
+                        "cosmic_time_source": f["cosmic_time_source"],
                         "milestones": [m["name"] for m in f.get("milestones", [])],
+                        "power_source": f["power_source"],
+                        "scientific_status": f["scientific_status"],
+                        "interpolation_validation_median_fractional_error": f[
+                            "interpolation_validation_median_fractional_error"
+                        ],
+                        "interpolation_validation_max_fractional_error": f[
+                            "interpolation_validation_max_fractional_error"
+                        ],
                     }
                     for f in frames
                 ],
@@ -4970,14 +5223,57 @@ def evolution_studio_view():
             file_name="evolution_manifest.json",
             mime="application/json",
         )
+        vcol1, vcol2, vcol3 = st.columns(3)
+        video_format = vcol1.selectbox(
+            "Video format", list(VIDEO_FORMATS), format_func=str.upper, key="evo_video_format"
+        )
+        video_fps = vcol2.number_input(
+            "Frames per second", min_value=0.1, max_value=30.0,
+            value={"0.25x (Teaching)": 0.5, "0.5x": 1.0, "1.0x": 2.0, "2.0x": 4.0}[playback_speed],
+            step=0.5, key="evo_video_fps",
+        )
+        video_size = vcol3.selectbox(
+            "Export size", [(960, 540), (1280, 720), (1920, 1080)],
+            format_func=lambda s: f"{s[0]} × {s[1]}", key="evo_video_size",
+        )
+        if st.button("Render evolution video", type="primary", key="evo_render_video"):
+            with st.spinner("Rendering deterministic evolution frames…"):
+                try:
+                    st.session_state["evo_video_bytes"] = render_evolution_video(
+                        frames,
+                        observable,
+                        video_format=video_format,
+                        fps=float(video_fps),
+                        width=int(video_size[0]),
+                        height=int(video_size[1]),
+                        theme=theme,
+                    )
+                    st.session_state["evo_video_spec"] = {
+                        "format": video_format,
+                        "fps": float(video_fps),
+                        "width": int(video_size[0]),
+                        "height": int(video_size[1]),
+                    }
+                except (ValueError, RuntimeError) as exc:
+                    st.error(f"Video rendering failed: {exc}")
+        video_bytes = st.session_state.get("evo_video_bytes")
+        video_spec = st.session_state.get("evo_video_spec", {})
+        if video_bytes and video_spec.get("format") == video_format:
+            st.download_button(
+                f"Download {video_format.upper()} evolution video",
+                data=video_bytes,
+                file_name=f"haloforge_evolution.{video_format}",
+                mime=VIDEO_FORMATS[video_format],
+                key="evo_download_video",
+            )
 
 
 def campaign_lab_view():
     st.markdown(
         '<div class="page-head"><span>PARAMETER CAMPAIGN LAB</span>'
         "<h2>Multi-Cosmology Explorations</h2>"
-        "<p>Orchestrate Latin Hypercube Sampling (LHS), Sobol quasi-random, and Cartesian sweeps. "
-        "Features non-oversubscribing core protection, resource pre-flight estimation, and automated trend response analysis.</p>"
+        "<p>Run reproducible CLASS/AxiCLASS parameter campaigns with a declared worker limit, "
+        "resource pre-flight, and saved per-member solver evidence. Campaign results are linear-theory calculations, not N-body results.</p>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -4997,7 +5293,7 @@ def campaign_lab_view():
         key="camp_strategy",
     )
     total_samples = c3.number_input(
-        "Target runs", min_value=3, max_value=50, value=8, step=1, key="camp_samples"
+        "Target runs", min_value=3, max_value=1000, value=8, step=1, key="camp_samples"
     )
 
     st.subheader("Select parameters to vary")
@@ -5013,6 +5309,7 @@ def campaign_lab_view():
         return
 
     param_bounds = {}
+    grid_increments = {}
     param_cols = st.columns(len(selected_params))
     default_ranges = {
         "n_s": (0.92, 1.02),
@@ -5029,6 +5326,19 @@ def campaign_lab_view():
             val_max = st.number_input(
                 f"{p_name} max", value=dr[1], key=f"camp_{p_name}_max"
             )
+            grid_increments[p_name] = float(
+                st.number_input(
+                    f"{p_name} grid increment",
+                    min_value=1e-12,
+                    value=0.05 if p_name == "H0" else (0.01 if p_name != "f_EDE" else 0.01),
+                    format="%.8g",
+                    help="Used only by Cartesian grids. Both endpoints are included when the increment lands on the maximum.",
+                    key=f"camp_{p_name}_increment",
+                )
+            )
+            if float(val_max) <= float(val_min):
+                st.error(f"{p_name} maximum must be greater than its minimum.")
+                return
             param_bounds[p_name] = (float(val_min), float(val_max))
 
     if strategy == "latin_hypercube":
@@ -5036,63 +5346,185 @@ def campaign_lab_view():
     elif strategy == "sobol":
         combos = sobol_campaign(param_bounds, int(total_samples))
     else:  # cartesian
-        steps = max(2, int(round(total_samples ** (1.0 / len(selected_params)))))
-        grid_dict = {
-            k: list(np.linspace(v[0], v[1], steps)) for k, v in param_bounds.items()
-        }
-        combos = cartesian_campaign(grid_dict, max_runs=64)
+        grid_dict = {}
+        for key, (lo, hi) in param_bounds.items():
+            increment = grid_increments[key]
+            values = np.arange(lo, hi + increment * 0.5, increment, dtype=float)
+            if values.size == 0 or values[-1] > hi + 1e-10:
+                raise ValueError(f"Invalid Cartesian increment for {key}.")
+            if not np.isclose(values[-1], hi, rtol=0, atol=max(1e-10, increment * 1e-8)):
+                values = np.append(values, hi)
+            grid_dict[key] = [float(v) for v in values]
+        combos = cartesian_campaign(grid_dict, max_runs=1000)
 
-    res_est = estimate_campaign_resources(len(combos))
+    max_workers = max(1, (os.cpu_count() or 2) - 1)
+    worker_count = st.slider(
+        "Concurrent CLASS workers",
+        1,
+        max(max_workers, 1),
+        min(2, max_workers),
+        help="The detected machine has one additional logical CPU reserved for responsiveness. Each worker launches an isolated CLASS/AxiCLASS process.",
+        key="camp_workers",
+    )
+    timing_samples = completed_member_timings()
+    measured_seconds_per_member = (
+        float(np.median(timing_samples)) if timing_samples else None
+    )
+    res_est = estimate_campaign_resources(
+        len(combos),
+        worker_count=int(worker_count),
+        seconds_per_run=measured_seconds_per_member,
+    )
 
     est_col1, est_col2, est_col3, est_col4 = st.columns(4)
     est_col1.metric("Total Jobs", f"{res_est.total_runs}")
-    est_col2.metric("Est. Compute Time", f"{res_est.estimated_cpu_seconds:.1f} s")
+    est_col2.metric(
+        "Estimated Compute Time",
+        f"{res_est.estimated_cpu_seconds:.1f} s"
+        if res_est.estimated_cpu_seconds is not None
+        else "Unmeasured",
+    )
     est_col3.metric("Est. Memory", f"{res_est.estimated_memory_mb:.1f} MB")
     est_col4.metric("Est. Disk", f"{res_est.estimated_disk_mb:.1f} MB")
+    st.caption(res_est.timing_basis)
 
     if res_est.cartesian_warning:
         st.warning(res_est.cartesian_warning)
 
-    max_workers = max(1, (os.cpu_count() or 2) - 1)
-    _ = st.slider(
-        "Parallel workers (recommended to leave 1 core free)",
-        1,
-        max(max_workers, 1),
-        min(2, max_workers),
-        key="camp_workers",
+    if len(combos) > 64:
+        st.warning(
+            f"This will execute {len(combos)} real CLASS/AxiCLASS calculations. Review the exact grid and estimated resources before starting."
+        )
+    confirmed_large_campaign = st.checkbox(
+        "I reviewed this campaign's exact grid and resource estimate.",
+        value=len(combos) <= 64,
+        key="camp_confirm_resources",
     )
 
-    if st.button("Execute Campaign Sweep", type="primary", key="camp_run_btn"):
-        with st.spinner("Executing non-oversubscribing parameter campaign batch…"):
-            camp = create_campaign(campaign_name, strategy, combos)
+    stored_campaign_ids = list_campaign_ids()
+    if stored_campaign_ids:
+        load_col, _ = st.columns([1, 1])
+        campaign_to_load = load_col.selectbox(
+            "Resume saved campaign",
+            stored_campaign_ids,
+            key="camp_load_id",
+        )
+        if load_col.button("Load campaign", key="camp_load_btn"):
+            try:
+                st.session_state["active_campaign"] = load_campaign(campaign_to_load)
+                st.success(f"Loaded campaign {campaign_to_load}.")
+            except ValueError as exc:
+                st.error(f"Campaign could not be loaded: {exc}")
 
-            # Evaluator function
-            def eval_member(p: dict) -> dict:
-                h = float(p.get("H0", 67.36)) / 100.0
-                omega_m = float(p.get("Omega_m", 0.315))
-                # Quick linear theory evaluation for campaign responsiveness
-                sig8 = (
-                    0.811
-                    * ((float(p.get("A_s", 2.1e-9)) / 2.1e-9) ** 0.5)
-                    * ((float(p.get("n_s", 0.965)) / 0.965) ** 0.3)
-                )
-                if p.get("enable_ede"):
-                    sig8 *= 1.0 - 0.5 * float(p.get("f_EDE", 0.10))
-                return {
-                    "sigma8": sig8,
-                    "Omega_m": omega_m,
-                    "h": h,
-                    "elapsed_seconds": 0.05,
-                }
-
-            execute_campaign_step(camp, eval_member, max_steps=len(combos))
-            st.session_state["active_campaign"] = camp
-        st.success(f"Campaign completed! Total jobs: {len(camp.members)}")
+    if st.button(
+        "Create real CLASS/AxiCLASS campaign queue",
+        type="primary",
+        key="camp_run_btn",
+        disabled=not confirmed_large_campaign,
+    ):
+        base_params = deepcopy(get_params())
+        camp = create_campaign(
+            campaign_name,
+            strategy,
+            combos,
+            metadata={
+                "scientific_status": CALCULATED_LINEAR_THEORY,
+                "backend": "CLASS/AxiCLASS",
+                "worker_count": int(worker_count),
+                "base_parameters": base_params,
+                "parameter_grid": grid_dict if strategy == "cartesian" else param_bounds,
+            },
+        )
+        campaign_path = save_campaign(camp)
+        st.session_state["active_campaign"] = camp
+        st.success(f"Campaign queue created and saved: {campaign_path}")
 
     camp = st.session_state.get("active_campaign")
     if camp:
+        counts = campaign_counts(camp)
+        st.subheader("Campaign Queue")
+        qcol1, qcol2, qcol3, qcol4, qcol5 = st.columns(5)
+        qcol1.metric("Pending", counts["pending"])
+        qcol2.metric("Completed", counts["completed"])
+        qcol3.metric("Failed", counts["failed"])
+        qcol4.metric("Cancelled", counts["cancelled"])
+        qcol5.metric("State", str(camp.metadata.get("lifecycle_state", "pending")).title())
+        if camp.metadata.get("recovery_note"):
+            st.warning(str(camp.metadata["recovery_note"]))
+
+        batch_size = st.number_input(
+            "Members to execute in next batch",
+            min_value=1,
+            max_value=max(1, counts["pending"]),
+            value=min(max(1, int(camp.metadata.get("worker_count", worker_count)) * 4), max(1, counts["pending"])),
+            step=1,
+            key=f"camp_batch_size_{camp.campaign_id}",
+        )
+        controls = st.columns(4)
+        if controls[0].button(
+            "Run next real-solver batch",
+            type="primary",
+            disabled=counts["pending"] == 0 or camp.metadata.get("lifecycle_state") == "paused",
+            key=f"camp_batch_run_{camp.campaign_id}",
+        ):
+            base_params = dict(camp.metadata["base_parameters"])
+
+            def eval_member(delta: dict) -> dict:
+                candidate = {**base_params, **delta}
+                if "f_EDE" in delta:
+                    candidate["enable_ede"] = float(candidate["f_EDE"]) > 0.0
+                result = compute_matter_power(candidate)
+                derived = result["derived"]
+                return {
+                    "sigma8": float(derived["sigma8"]),
+                    "Omega_m": float(derived["Omega_m"]),
+                    "h": float(derived["h"]),
+                    "class_status": result["class_status"],
+                    "class_settings": result["class_settings"],
+                    "solver_execution": result.get("solver_execution", {}),
+                    "classy_path": result.get("classy_path", ""),
+                }
+
+            with st.spinner("Running isolated CLASS/AxiCLASS workers and checkpointing each result…"):
+                execute_campaign_step(
+                    camp,
+                    eval_member,
+                    max_steps=int(batch_size),
+                    worker_count=int(camp.metadata["worker_count"]),
+                    on_member_complete=save_campaign,
+                )
+            st.success("Batch finished; completed and failed members were checkpointed locally.")
+        if controls[1].button("Pause queue", disabled=counts["pending"] == 0, key=f"camp_pause_{camp.campaign_id}"):
+            pause_campaign(camp)
+            save_campaign(camp)
+            st.rerun()
+        if controls[2].button("Resume queue", disabled=camp.metadata.get("lifecycle_state") != "paused", key=f"camp_resume_{camp.campaign_id}"):
+            resume_campaign(camp)
+            save_campaign(camp)
+            st.rerun()
+        if controls[3].button("Retry failed", disabled=counts["failed"] == 0, key=f"camp_retry_{camp.campaign_id}"):
+            retry_failed_members(camp)
+            save_campaign(camp)
+            st.rerun()
+        if st.button("Cancel unstarted members", disabled=counts["pending"] == 0, key=f"camp_cancel_{camp.campaign_id}"):
+            cancelled = cancel_pending_members(camp)
+            save_campaign(camp)
+            st.info(f"Cancelled {cancelled} unstarted member(s); completed evidence was retained.")
+
         df = campaign_to_dataframe(camp)
         st.subheader("Campaign Results & Multi-Dimensional Analysis")
+        campaign_status = camp.metadata.get("scientific_status", CALCULATED_LINEAR_THEORY)
+        st.caption(
+            f"Evidence status: {STATUS_LABELS.get(campaign_status, campaign_status)}. "
+            "These are stored linear-theory solver calculations, not nonlinear simulation measurements."
+        )
+        st.download_button(
+            "Download campaign reproducibility bundle (ZIP)",
+            data=campaign_export_bundle(camp),
+            file_name=f"{camp.campaign_id}_bundle.zip",
+            mime="application/zip",
+            key=f"campaign_bundle_{camp.campaign_id}",
+        )
         theme = st.session_state.get("accessibility_theme", "Dark")
         par_fig = campaign_parallel_coordinates(
             df, selected_params, color_metric="sigma8", theme=theme
@@ -5116,10 +5548,10 @@ def campaign_lab_view():
 
 def simulation_lab_view():
     st.markdown(
-        '<div class="page-head"><span>SIMULATION LAB</span>'
-        "<h2>GADGET-4 N-body Simulation & Halo Pipeline</h2>"
-        "<p>Reproducible cosmological N-body workflows: installation doctor, 3D periodic box configurator, "
-        "2LPT initial conditions, tabulated EDE expansion history, periodic FOF halo finding, and HMF validation.</p>"
+        '<div class="page-head"><span>SIMULATION PREPARATION LAB</span>'
+        "<h2>GADGET-4 Lab</h2>"
+        "<p>Plan a collisionless box, inspect recorded snapshots, and compare matched FoF catalogues with the linear HMF. "
+        "Execution and EDE dynamics are unavailable until externally validated.</p>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -5127,12 +5559,12 @@ def simulation_lab_view():
 
     t_doc, t_box, t_ic, t_conf, t_halo, t_hmf = st.tabs(
         [
-            "1 · Installation Doctor",
-            "2 · Periodic Box Configurator",
-            "3 · 2LPT Initial Conditions",
-            "4 · GADGET-4 Runtime Files",
-            "5 · Halo Finding & 3D Web",
-            "6 · HMF vs N-body Comparison",
+            "1 · Doctor",
+            "2 · Box",
+            "3 · ICs",
+            "4 · Runtime",
+            "5 · Halos",
+            "6 · HMF Compare",
         ]
     )
 
@@ -5143,12 +5575,20 @@ def simulation_lab_view():
         dcol1.metric("CPU Cores", f"{report.cpu_cores}")
         dcol2.metric("RAM Available", f"{report.ram_gb:.1f} GB")
         dcol3.metric("Free Disk", f"{report.free_disk_gb:.1f} GB")
-        dcol4.metric("Recommended Runtime", report.recommended_runtime)
+        dcol4.metric(
+            "Acceptance Evidence",
+            "Recorded" if report.acceptance_evidence_present else "Missing",
+        )
+        st.caption(report.recommended_runtime)
 
         st.markdown(
             f"**GADGET-4 Reference:** {GADGET4_VERSION} (Commit `{GADGET4_PINNED_COMMIT[:8]}`) · License: GPL-3.0"
         )
         st.caption(f"Citation: {GADGET4_CITATION}")
+        if not report.ready_for_simulation:
+            st.warning(
+                "Simulation execution is intentionally gated. A detected Docker/MPI installation is not proof of a reproducible GADGET-4 build or validated EDE dynamics."
+            )
         if report.recommendations:
             for rec in report.recommendations:
                 st.info(rec)
@@ -5167,12 +5607,13 @@ def simulation_lab_view():
         particles_per_dim = bcol2.selectbox(
             "Particles per dimension N", [32, 64, 128, 256], index=1, key="sim_part_dim"
         )
-        is_hydro = bcol3.toggle(
-            "Include SPH Hydrodynamics", value=False, key="sim_is_hydro"
+        bcol3.metric("Physics mode", "Collisionless DM-only")
+        bcol3.caption(
+            "Gas/SPH and baryonic-feedback workflows are not configured or validated here."
         )
 
         res = compute_box_resolution(
-            box_size, particles_per_dim, params, is_hydro=is_hydro
+            box_size, particles_per_dim, params, is_hydro=False
         )
 
         rcol1, rcol2, rcol3, rcol4 = st.columns(4)
@@ -5180,6 +5621,74 @@ def simulation_lab_view():
         rcol2.metric("Particle Mass mp", f"{res.particle_mass_msun_h:.2e} h⁻¹ M☉")
         rcol3.metric("Mean Separation d", f"{res.mean_separation_mpc_h:.3f} h⁻¹ Mpc")
         rcol4.metric("Nyquist Wavenumber", f"{res.k_nyquist_h_mpc:.2f} h/Mpc")
+
+        # A bounded visual geometry preview: it deliberately samples the
+        # unperturbed lattice rather than pretending to show evolved matter.
+        preview_dim = min(int(particles_per_dim), 12)
+        preview_axis = np.linspace(
+            float(box_size) / (2.0 * preview_dim),
+            float(box_size) - float(box_size) / (2.0 * preview_dim),
+            preview_dim,
+        )
+        preview_x, preview_y, preview_z = np.meshgrid(
+            preview_axis, preview_axis, preview_axis, indexing="ij"
+        )
+        box_preview = go.Figure(
+            go.Scatter3d(
+                x=preview_x.ravel(),
+                y=preview_y.ravel(),
+                z=preview_z.ravel(),
+                mode="markers",
+                marker={"size": 2.5, "color": "#4fc3b7", "opacity": 0.7},
+                hovertemplate="x=%{x:.3g}, y=%{y:.3g}, z=%{z:.3g} h⁻¹ Mpc<extra></extra>",
+                name="Sampled initial lattice",
+            )
+        )
+        box_edges = np.asarray(
+            [
+                [0, 0, 0], [box_size, 0, 0], [box_size, box_size, 0], [0, box_size, 0], [0, 0, 0],
+                [0, 0, box_size], [box_size, 0, box_size], [box_size, box_size, box_size], [0, box_size, box_size], [0, 0, box_size],
+                [np.nan, np.nan, np.nan], [box_size, 0, 0], [box_size, 0, box_size],
+                [np.nan, np.nan, np.nan], [box_size, box_size, 0], [box_size, box_size, box_size],
+                [np.nan, np.nan, np.nan], [0, box_size, 0], [0, box_size, box_size],
+            ],
+            dtype=float,
+        )
+        box_preview.add_trace(
+            go.Scatter3d(
+                x=box_edges[:, 0], y=box_edges[:, 1], z=box_edges[:, 2], mode="lines",
+                line={"color": "#93a4a8", "width": 3}, hoverinfo="skip", showlegend=False,
+            )
+        )
+        box_preview.update_layout(
+            height=430,
+            margin={"l": 0, "r": 0, "b": 0, "t": 34},
+            title="Periodic volume and initial lattice preview",
+            meta={
+                "caption": (
+                    f"A {preview_dim}³ sampled view of the unperturbed {particles_per_dim}³ particle lattice. "
+                    "It shows geometry and spacing only; it is not an evolved N-body density field."
+                ),
+                "mislead": (
+                    "Each visible point represents a sampled lattice location, not one plotted simulation particle. "
+                    "Inspect a recorded GADGET-4 snapshot in the halo tab for an evolved particle distribution."
+                ),
+            },
+            scene={
+                "aspectmode": "cube",
+                "xaxis_title": "x [h⁻¹ Mpc]",
+                "yaxis_title": "y [h⁻¹ Mpc]",
+                "zaxis_title": "z [h⁻¹ Mpc]",
+                "xaxis": {"range": [0, box_size]},
+                "yaxis": {"range": [0, box_size]},
+                "zaxis": {"range": [0, box_size]},
+            },
+        )
+        chart(
+            box_preview,
+            height=430,
+            key="sim_box_geometry_preview",
+        )
 
         st.markdown("#### Halo Particle Count Resolution Thresholds")
         hcol1, hcol2, hcol3, hcol4 = st.columns(4)
@@ -5205,7 +5714,12 @@ def simulation_lab_view():
                 st.warning(w)
 
     with t_ic:
-        st.subheader("2LPT Initial Conditions Generation")
+        st.subheader("Linear (Zel'dovich/1LPT) Initial Conditions")
+        st.warning(
+            "This generator currently produces first-order Zel'dovich initial conditions. "
+            "A separately tested 2LPT numerical kernel is not exposed here until independent "
+            "benchmark evidence and validated EDE second-order growth inputs are available."
+        )
         ic_col1, ic_col2, ic_col3 = st.columns(3)
         z_start = ic_col1.number_input(
             "Start Redshift z_start",
@@ -5218,31 +5732,109 @@ def simulation_lab_view():
         paired_fixed = ic_col3.toggle(
             "Paired-Fixed Phase Ensemble", value=False, key="sim_paired_fixed"
         )
+        ic_source_run = current_pipeline_run()
+        if ic_source_run is None:
+            st.info(
+                "Complete and load a CLASS/AxiCLASS run before generating ICs."
+            )
+        else:
+            available_ic_redshifts = np.asarray(
+                ic_source_run["power_result"]["redshifts"], dtype=float
+            )
+            st.caption(
+                "IC generation requires an exact stored P(k,z_start) slice; available "
+                "redshifts: "
+                + ", ".join(f"{z:g}" for z in available_ic_redshifts)
+                + ". Rerun the solver if your intended z_start is absent."
+            )
 
         if st.button(
-            "Generate & Verify 2LPT Initial Conditions",
+            "Generate & Verify Linear Initial Conditions",
             type="primary",
             key="sim_gen_ic_btn",
         ):
-            k_eval = np.logspace(-2, 1, 100)
-            p_eval = 2000.0 * (k_eval / 0.1) ** (-1.2)
-            pos, vel, ids, ic_report = generate_2lpt_particles(
-                box_size,
-                particles_per_dim,
-                k_eval,
-                p_eval,
-                z_start,
-                params,
-                seed=seed,
-                paired_fixed=paired_fixed,
-            )
+            scientific_run = current_pipeline_run()
+            if scientific_run is None:
+                st.error(
+                    "A completed CLASS/AxiCLASS run is required. Initial conditions must use its stored linear P(k), not a substitute spectrum."
+                )
+                return
+            power = scientific_run["power_result"]
+            redshifts = np.asarray(power["redshifts"], dtype=float)
+            source_params = scientific_run["params"]
+            try:
+                source_index = redshift_index(redshifts, float(z_start))
+                growth = np.asarray(power["growth_class"], dtype=float)
+                if growth.shape != redshifts.shape or redshifts.size < 2:
+                    raise ValueError(
+                        "The stored run needs at least two CLASS/AxiCLASS growth samples "
+                        "to derive the IC velocity growth rate."
+                    )
+                log_a = -np.log1p(redshifts)
+                growth_rate = float(np.gradient(np.log(growth), log_a)[source_index])
+                background_omega_m = np.asarray(
+                    power.get("background_omega_m_by_z", []), dtype=float
+                )
+                if background_omega_m.shape == redshifts.shape:
+                    e_rate = float(
+                        np.sqrt(
+                            float(source_params["Omega_m"])
+                            * (1.0 + float(z_start)) ** 3
+                            / background_omega_m[source_index]
+                        )
+                    )
+                elif source_params.get("enable_ede"):
+                    raise ValueError(
+                        "The stored EDE run has no usable AxiCLASS background sequence. "
+                        "Regenerate it before producing EDE initial conditions."
+                    )
+                else:
+                    omega_m0 = float(source_params["Omega_m"])
+                    e_rate = float(
+                        np.sqrt(
+                            omega_m0 * (1.0 + float(z_start)) ** 3
+                            + (1.0 - omega_m0)
+                        )
+                    )
+                k_eval = np.asarray(power["k"], dtype=float)
+                p_eval = np.asarray(power["P_by_z"], dtype=float)[source_index]
+                pos, vel, ids, ic_report = generate_zeldovich_particles(
+                    box_size,
+                    particles_per_dim,
+                    k_eval,
+                    p_eval,
+                    z_start,
+                    source_params,
+                    seed=seed,
+                    paired_fixed=paired_fixed,
+                    spectrum_redshift=float(redshifts[source_index]),
+                    growth_rate=growth_rate,
+                    expansion_rate_E=e_rate,
+                )
+            except ValueError as exc:
+                st.error(
+                    f"Initial conditions were not generated: {exc} Available stored redshifts: "
+                    + ", ".join(f"{z:g}" for z in redshifts)
+                )
+                return
             st.session_state["sim_particles"] = (pos, vel, ids)
             st.session_state["sim_ic_report"] = ic_report
+            st.session_state["sim_ic_source"] = {
+                "run_id": st.session_state.get("current_run_id"),
+                "redshift": float(redshifts[source_index]),
+                "spectrum": "CLASS/AxiCLASS linear matter P(k)",
+                "growth_rate": growth_rate,
+                "expansion_rate_E": e_rate,
+            }
 
         ic_rep = st.session_state.get("sim_ic_report")
         if ic_rep:
-            st.success(ic_rep.summary)
-            vcol1, vcol2, vcol3 = st.columns(3)
+            (st.success if ic_rep.checks_passed else st.warning)(ic_rep.summary)
+            if not ic_rep.checks_passed:
+                st.warning(
+                    "The IC realization failed its configured basic verification. Do not use it as a production input; adjust the grid/spectrum and regenerate."
+                )
+            vcol1, vcol2, vcol3, vcol4 = st.columns(4)
             vcol1.metric(
                 "Center of Mass V_cm",
                 f"{ic_rep.center_of_mass_velocity_km_s:.2e} km/s",
@@ -5254,11 +5846,19 @@ def simulation_lab_view():
             vcol3.metric(
                 "Periodicity Check", "PASS" if ic_rep.periodicity_passed else "FAIL"
             )
+            vcol4.metric(
+                "Measured P(k) Shell Error",
+                f"{ic_rep.power_agreement_median_fractional_error:.2%}",
+                help=(
+                    f"Median fractional difference across {ic_rep.power_agreement_bin_count} "
+                    "measured Fourier shells. This is a realization diagnostic, not a 2LPT validation."
+                ),
+            )
 
     with t_conf:
-        st.subheader("Validated GADGET-4 Configuration & Parameter Files")
+        st.subheader("GADGET-4 Configuration Planning Files")
         config_sh = generate_config_sh(
-            is_hydro=is_hydro, enable_2lpt=True, enable_fof=True, enable_subfind=True
+            is_hydro=False, enable_2lpt=False, enable_fof=True, enable_subfind=True
         )
         param_txt = generate_gadget4_parameter_file(
             box_size,
@@ -5268,13 +5868,15 @@ def simulation_lab_view():
             params,
             start_redshift=z_start,
         )
-        expansion_txt = generate_tabulated_expansion_history(params, num_points=100)
-
-        cf1, cf2, cf3 = st.tabs(
+        output_times_txt = generate_output_times_file(
+            [10.0, 5.0, 2.0, 1.0, 0.0], start_redshift=z_start
+        )
+        cf1, cf2, cf3, cf4 = st.tabs(
             [
                 "Config.sh (Compile)",
                 "param.txt (Runtime)",
-                "ExpansionHistory.txt (Tabulated EDE H(a))",
+                "output_times.txt",
+                "EDE Runtime Status",
             ]
         )
         with cf1:
@@ -5283,28 +5885,114 @@ def simulation_lab_view():
             st.code(param_txt, language="text")
         with cf3:
             st.caption(
-                "Tabulated Hubble expansion H(a)/H0 ensuring exact dynamical coupling for EDE cosmology."
+                "Desired output scale factors for z=10, 5, 2, 1, and 0. This plain-ASCII "
+                "file is required by the generated `OutputListFilename output_times.txt` setting."
             )
-            st.code(expansion_txt[:1200] + "\n...", language="text")
+            st.code(output_times_txt, language="text")
+        with cf4:
+            if params.get("enable_ede"):
+                st.error(
+                    "EDE GADGET-4 execution is unavailable. HaloForge does not emit a "
+                    "phenomenological H(a) table or a fictitious runtime setting as a substitute "
+                    "for an externally validated EDE GADGET-4 implementation."
+                )
+            else:
+                st.info(
+                    "These are standard-background planning files only. GADGET-4 execution "
+                    "still requires the pinned image and its recorded official acceptance case."
+                )
 
     with t_halo:
-        st.subheader("Friends-of-Friends (FOF) Halo Finding & 3D Spatial Visualizer")
-        particles = st.session_state.get("sim_particles")
-        if particles is None:
-            st.info(
-                "Generate initial conditions in Tab 3 first to run the halo pipeline."
-            )
+        st.subheader("Friends-of-Friends (FOF) on an Evolved GADGET-4 Snapshot")
+        st.caption(
+            "FOF is intentionally unavailable for generated initial conditions. Load an actual GADGET-4 PartType1 HDF5 snapshot produced by a recorded simulation run."
+        )
+        snapshot_path = st.text_input(
+            "Local GADGET-4 HDF5 snapshot path",
+            placeholder="/absolute/path/to/snap_###.hdf5",
+            key="sim_snapshot_path",
+        )
+        if st.button("Validate and load snapshot", key="sim_load_snapshot"):
+            try:
+                # Upstream GADGET-4 snapshots can omit Omega0/HubbleParam.
+                # Supply them only from the loaded calculation, never from
+                # editable draft controls or global defaults.
+                bound_run = current_pipeline_run()
+                derived = (
+                    bound_run.get("power_result", {}).get("derived", {})
+                    if bound_run is not None
+                    else {}
+                )
+                snapshot = load_gadget4_dm_snapshot(
+                    snapshot_path,
+                    omega_m=derived.get("Omega_m"),
+                    h=derived.get("h"),
+                )
+                st.session_state["sim_snapshot"] = snapshot
+                st.session_state.pop("sim_halo_catalogue", None)
+                st.session_state.pop("sim_snapshot_manifest", None)
+                st.success(
+                    f"Loaded {len(snapshot.particle_ids):,} DM particles at z={snapshot.redshift:g} from a periodic {snapshot.box_size_mpc_h:g} h⁻¹ Mpc box."
+                )
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"Snapshot was not loaded: {exc}")
+
+        snapshot = st.session_state.get("sim_snapshot")
+        if snapshot is None:
+            st.info("Load a validated local snapshot to enable FOF halo finding.")
         else:
-            pos, vel, _ = particles
+            st.caption(
+                f"Snapshot source: {snapshot.source_path} · z={snapshot.redshift:g} · a={snapshot.scale_factor:.6g} · "
+                f"mₚ={snapshot.particle_mass_msun_h:.3e} h⁻¹ M☉ · Ωm={snapshot.omega_m:.6g}"
+            )
+            active_run_id = st.session_state.get("current_run_id")
+            active_saved_run = (
+                run_storage.load_run(active_run_id) if active_run_id else None
+            )
+            if active_saved_run is None:
+                st.info(
+                    "Load an integrity-checked saved linear run to bind this snapshot "
+                    "to an exact cosmology before HMF comparison."
+                )
+            else:
+                sidecar = manifest_path_for_snapshot(snapshot.source_path)
+                manifest_columns = st.columns(2)
+                if manifest_columns[0].button(
+                    "Bind snapshot to active saved run",
+                    key="sim_write_snapshot_manifest",
+                ):
+                    try:
+                        written = write_snapshot_manifest(snapshot, active_saved_run)
+                        st.success(f"Wrote immutable snapshot manifest: {written.name}")
+                    except ValueError as exc:
+                        st.error(f"Snapshot was not bound: {exc}")
+                if manifest_columns[1].button(
+                    "Verify snapshot-run binding",
+                    key="sim_verify_snapshot_manifest",
+                ):
+                    try:
+                        st.session_state["sim_snapshot_manifest"] = (
+                            load_and_validate_snapshot_manifest(
+                                snapshot, active_saved_run
+                            )
+                        )
+                        st.success("Exact snapshot bytes and saved-run identity match.")
+                    except ValueError as exc:
+                        st.session_state.pop("sim_snapshot_manifest", None)
+                        st.error(f"Snapshot-run binding is not valid: {exc}")
+                st.caption(
+                    f"Required sidecar: {sidecar.name}. This records file identity and headers; it is not a GADGET-4 or EDE validation certificate."
+                )
             if st.button("Run Periodic FOF Group Finder", key="sim_fof_btn"):
                 cat = find_fof_halos(
-                    pos,
-                    vel,
-                    box_size,
-                    res.particle_mass_msun_h,
-                    redshift=0.0,
+                    snapshot.positions_mpc_h,
+                    snapshot.velocities_raw,
+                    snapshot.box_size_mpc_h,
+                    snapshot.particle_mass_msun_h,
+                    redshift=snapshot.redshift,
                     linking_length_b=0.2,
                     min_particles=20,
+                    omega_m=snapshot.omega_m,
                 )
                 st.session_state["sim_halo_catalogue"] = cat
 
@@ -5317,6 +6005,22 @@ def simulation_lab_view():
                 df_halos = catalogue_to_dataframe(cat)
                 if not df_halos.empty:
                     st.dataframe(df_halos.head(50), hide_index=True, width="stretch")
+                snapshot_manifest = st.session_state.get("sim_snapshot_manifest")
+                if snapshot_manifest is None:
+                    st.info(
+                        "Verify the snapshot-to-run binding before saving a durable catalogue."
+                    )
+                elif st.button("Save versioned FOF catalogue", key="sim_save_fof_catalogue"):
+                    try:
+                        stored_catalogue = save_fof_catalogue(
+                            cat, snapshot, snapshot_manifest
+                        )
+                        st.success(
+                            "Saved HDF5, Parquet, and manifest records in the local research vault: "
+                            + stored_catalogue.catalogue_id
+                        )
+                    except ValueError as exc:
+                        st.error(f"Catalogue was not saved: {exc}")
 
     with t_hmf:
         st.subheader("Finite-Bin Abundance vs. Analytic Halo Mass Function")
@@ -5326,21 +6030,98 @@ def simulation_lab_view():
                 "A resolved halo catalogue is required to perform HMF abundance validation."
             )
         else:
-            mass_grid = np.logspace(11, 15, 50)
-            sigma_grid = 2.0 / (mass_grid / 1e11) ** 0.2
-            comp_report = compare_catalogue_to_analytic_hmf(
-                cat,
-                mass_grid_h=mass_grid,
-                sigma_grid=sigma_grid,
-                rho0=2.775e11 * float(params.get("Omega_m", 0.315)),
-                h=float(params.get("H0", 67.36)) / 100.0,
-                fitting=params.get("fitting", "Sheth-Tormen 2001"),
-                num_mass_bins=8,
-            )
-            st.info(comp_report.interpretation)
-            theme = st.session_state.get("accessibility_theme", "Dark")
-            hmf_fig = render_hmf_comparison_plot(comp_report, theme=theme)
-            chart(hmf_fig, 540, "sim_hmf_comp_chart", axis_controls=True)
+            scientific_run = current_pipeline_run()
+            if scientific_run is None:
+                st.error(
+                    "A completed CLASS/AxiCLASS run is required for comparison. No surrogate σ(M) is used."
+                )
+            else:
+                fof_fits = [
+                    name
+                    for name in FITTING_NAMES
+                    if fit_contract(name).mass_definition == "fof_b0.2"
+                ]
+                comparison_fit = st.selectbox(
+                    "FOF b=0.2-compatible HMF fit",
+                    fof_fits,
+                    index=fof_fits.index(params["fitting"])
+                    if params.get("fitting") in fof_fits
+                    else 0,
+                    help="Spherical-overdensity and analytic-top-hat fits are unavailable: this catalogue contains only FOF b=0.2 masses.",
+                    key="sim_hmf_fof_fit",
+                )
+                sigma_result = scientific_run["sigma_result"]
+                active_h = float(scientific_run["power_result"]["derived"]["h"])
+                active_omega_m = float(scientific_run["power_result"]["derived"]["Omega_m"])
+                snapshot = st.session_state.get("sim_snapshot")
+                if snapshot is None:
+                    st.error("The catalogue is missing its validated snapshot provenance.")
+                    return
+                active_run_id = st.session_state.get("current_run_id")
+                active_saved_run = (
+                    run_storage.load_run(active_run_id) if active_run_id else None
+                )
+                if active_saved_run is None:
+                    st.error("Load the saved linear run that produced this comparison.")
+                    return
+                try:
+                    manifest = load_and_validate_snapshot_manifest(
+                        snapshot, active_saved_run
+                    )
+                    st.session_state["sim_snapshot_manifest"] = manifest
+                except ValueError as exc:
+                    st.error(
+                        "Exact cosmology comparison is blocked until the snapshot is "
+                        f"bound and verified against this saved run: {exc}"
+                    )
+                    return
+                if not (
+                    np.isclose(snapshot.h, active_h, rtol=0, atol=1e-8)
+                    and np.isclose(snapshot.omega_m, active_omega_m, rtol=0, atol=1e-8)
+                ):
+                    st.error(
+                        "Snapshot and active linear run have different Hubble or matter-density headers. "
+                        "Cross-cosmology HMF comparison is prohibited."
+                    )
+                    return
+                sigma_redshifts = np.asarray(sigma_result["redshifts"], dtype=float)
+                sigma_index = redshift_index(sigma_redshifts, float(cat.redshift))
+                if not np.isclose(
+                    sigma_redshifts[sigma_index], float(cat.redshift), rtol=0, atol=1e-8
+                ):
+                    st.error(
+                        f"The active linear run has no exact σ(M) slice at snapshot z={cat.redshift:g}. "
+                        "Rerun CLASS/AxiCLASS with that redshift; nearest-redshift substitution is prohibited."
+                    )
+                    return
+                h = active_h
+                comp_report = compare_catalogue_to_analytic_hmf(
+                    cat,
+                    mass_grid_h=np.asarray(sigma_result["M_h"], dtype=float),
+                    sigma_grid=np.asarray(sigma_result["sigma_by_z"], dtype=float)[sigma_index],
+                    rho0=float(sigma_result["rho0"]),
+                    h=h,
+                    fitting=comparison_fit,
+                    num_mass_bins=8,
+                )
+                st.caption(
+                    f"Analytic input: stored CLASS/AxiCLASS σ(M,z={sigma_redshifts[sigma_index]:g}) from the active run. "
+                    "The immutable sidecar binds these exact snapshot bytes to the active saved linear run; H0 and Ωm headers match. The catalogue is strictly FOF b=0.2; no spherical-overdensity mass is inferred. This remains an unvalidated comparison, especially for EDE."
+                )
+                st.info(comp_report.interpretation)
+                with st.expander("Uncertainty accounting", expanded=False):
+                    st.caption(
+                        "Only the explicitly included source appears as an error bar. "
+                        "Unquantified sources are retained as open evidence, not silently treated as zero."
+                    )
+                    st.dataframe(
+                        pd.DataFrame(comp_report.uncertainty_sources),
+                        hide_index=True,
+                        width="stretch",
+                    )
+                theme = st.session_state.get("accessibility_theme", "Dark")
+                hmf_fig = render_hmf_comparison_plot(comp_report, theme=theme)
+                chart(hmf_fig, 540, "sim_hmf_comp_chart", axis_controls=True)
 
 
 def render_project_header():

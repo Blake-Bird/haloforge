@@ -35,6 +35,9 @@ def _array_payload(current: dict) -> dict:
         "background_omega_m_by_z": np.asarray(
             power.get("background_omega_m_by_z", []), dtype=float
         ),
+        "background_cosmic_time_gyr_by_z": np.asarray(
+            power.get("background_cosmic_time_gyr_by_z", []), dtype=float
+        ),
         "Delta2": k**3 * p / (2.0 * np.pi**2),
         "M_h": np.asarray(sigma["M_h"], dtype=float),
         "M": np.asarray(sigma["M"], dtype=float),
@@ -122,7 +125,9 @@ def create_run_from_current_state(
     now = datetime.now(timezone.utc).isoformat()
     run_name = name.strip() or "Untitled run"
     class_settings = deepcopy(power.get("class_settings", {}))
-    provenance = run_provenance(params, class_settings)
+    solver_execution = deepcopy(power.get("solver_execution", {}))
+    solver_execution.setdefault("classy_path", power.get("classy_path", ""))
+    provenance = run_provenance(params, class_settings, solver_execution)
     run = {
         "storage_schema_version": RUN_STORAGE_SCHEMA_VERSION,
         "migration_history": [],
@@ -146,6 +151,7 @@ def create_run_from_current_state(
         "class_error": power.get("class_error", power.get("warning", "")),
         "background_warning": power.get("background_warning", ""),
         "class_settings": class_settings,
+        "solver_execution": solver_execution,
         "provenance": provenance,
         "sigma8": power.get("derived", {}).get("sigma8"),
         "rho0": sigma.get("rho0"),

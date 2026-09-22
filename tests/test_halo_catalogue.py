@@ -10,7 +10,12 @@ def test_find_fof_halos_empty_catalogue():
     pos = np.empty((0, 3), dtype=float)
     vel = np.empty((0, 3), dtype=float)
     cat = find_fof_halos(
-        pos, vel, box_size_mpc_h=50.0, particle_mass_msun_h=1e10, redshift=20.0
+        pos,
+        vel,
+        box_size_mpc_h=50.0,
+        particle_mass_msun_h=1e10,
+        redshift=20.0,
+        omega_m=0.315,
     )
     assert cat.is_empty_due_to_resolution
     assert len(cat.halos) == 0
@@ -54,6 +59,7 @@ def test_find_fof_halos_identifies_clusters_across_periodic_boundary():
         redshift=0.0,
         linking_length_b=0.2,
         min_particles=20,
+        omega_m=0.315,
     )
 
     assert not cat.is_empty_due_to_resolution
@@ -64,7 +70,7 @@ def test_find_fof_halos_identifies_clusters_across_periodic_boundary():
     df = catalogue_to_dataframe(cat)
     assert len(df) == 2
     assert "M_fof_msun_h" in df.columns
-    assert "M_200m_msun_h" in df.columns
+    assert "M_200m_msun_h" not in df.columns
 
     fig = render_3d_halo_view(cat)
     assert fig is not None

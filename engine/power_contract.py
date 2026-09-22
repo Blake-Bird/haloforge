@@ -15,6 +15,7 @@ def validate_power_arrays(result: dict, params: dict | None = None) -> None:
             "redshifts",
             "growth_class",
             "background_omega_m_by_z",
+            "background_cosmic_time_gyr_by_z",
         ):
             if key in result and np.asarray(result[key]).dtype.kind not in "fiu":
                 raise ValueError(f"{key} must contain real numeric arrays")
@@ -69,6 +70,18 @@ def validate_power_arrays(result: dict, params: dict | None = None) -> None:
     ):
         raise ValueError(
             "Background matter fractions must be positive finite values at every redshift, or unavailable"
+        )
+    cosmic_time = np.asarray(
+        result.get("background_cosmic_time_gyr_by_z", []), dtype=float
+    )
+    if cosmic_time.shape != (0,) and (
+        cosmic_time.shape != redshifts.shape
+        or not np.isfinite(cosmic_time).all()
+        or np.any(cosmic_time <= 0)
+        or np.any(np.diff(cosmic_time) >= 0)
+    ):
+        raise ValueError(
+            "Background cosmic time must be positive, finite, and decrease with redshift, or unavailable"
         )
     if params is not None:
         requested_z = sorted(

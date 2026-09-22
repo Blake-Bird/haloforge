@@ -36,6 +36,8 @@ def test_reproducibility_hash_is_stable_and_input_sensitive():
 
 def test_run_provenance_has_hash_that_is_distinct_from_timestamp():
     value = run_provenance(DEFAULT_PARAMS, {"output": "mPk"})
+    assert "solver_binding" in value
+    assert "worker_python_sha256" in value["solver_binding"]
     assert value["created_at"]
     assert len(value["reproducibility_hash"]) == 64
 

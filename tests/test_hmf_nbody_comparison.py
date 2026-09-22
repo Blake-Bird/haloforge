@@ -8,10 +8,13 @@ from engine.hmf_nbody_comparison import (
 
 
 def test_compatible_mass_column():
-    assert compatible_mass_column("Tinker (2008)") == "M_200m_msun_h"
-    assert compatible_mass_column("Sheth-Tormen (1999)") == "M_fof_msun_h"
-    assert compatible_mass_column("Watson SO (2013)") == "M_200m_msun_h"
-    assert compatible_mass_column("Press-Schechter (1974)") == "M_fof_msun_h"
+    assert compatible_mass_column("Watson FOF (2013)") == "M_fof_msun_h"
+    import pytest
+
+    with pytest.raises(ValueError, match="contains only FOF b=0.2"):
+        compatible_mass_column("Tinker (2008)")
+    with pytest.raises(ValueError, match="contains only FOF b=0.2"):
+        compatible_mass_column("Sheth-Tormen (1999)")
 
 
 def test_compare_catalogue_to_analytic_hmf_handles_empty_catalogue():
@@ -21,6 +24,7 @@ def test_compare_catalogue_to_analytic_hmf_handles_empty_catalogue():
         particle_mass_msun_h=1e10,
         linking_length_b=0.2,
         min_particles=20,
+        omega_m=0.315,
         halos=[],
         is_empty_due_to_resolution=True,
         summary="Empty",
@@ -33,11 +37,16 @@ def test_compare_catalogue_to_analytic_hmf_handles_empty_catalogue():
         sigma_grid=sigma_grid,
         rho0=2.775e11 * 0.315,
         h=0.6736,
-        fitting="Sheth-Tormen (1999)",
+        fitting="Watson FOF (2013)",
     )
     assert report.total_halos == 0
     assert report.complete_halos == 0
     assert len(report.bins) == 0
+    assert {row["source"] for row in report.uncertainty_sources} >= {
+        "Poisson counting",
+        "Finite volume and sample variance",
+        "Halo-finder systematics",
+    }
 
 
 def test_compare_catalogue_to_analytic_hmf_with_synthetic_catalogue():
@@ -50,15 +59,12 @@ def test_compare_catalogue_to_analytic_hmf_with_synthetic_catalogue():
             x=rng.uniform(0, 100),
             y=rng.uniform(0, 100),
             z=rng.uniform(0, 100),
-            vx=0.0,
-            vy=0.0,
-            vz=0.0,
+            vx_snapshot_raw=0.0,
+            vy_snapshot_raw=0.0,
+            vz_snapshot_raw=0.0,
             n_particles=int(m / 1e10),
             M_fof_msun_h=float(m),
-            M_200m_msun_h=float(m),
-            M_200c_msun_h=float(m * 0.85),
-            R_200m_kpc_h=500.0,
-            sigma_v_km_s=250.0,
+            velocity_dispersion_snapshot_raw=250.0,
         )
         for i, m in enumerate(halo_masses)
     ]
@@ -68,6 +74,7 @@ def test_compare_catalogue_to_analytic_hmf_with_synthetic_catalogue():
         particle_mass_msun_h=1e10,
         linking_length_b=0.2,
         min_particles=20,
+        omega_m=0.315,
         halos=halos,
         is_empty_due_to_resolution=False,
         summary="Synthetic test catalogue",
@@ -81,12 +88,15 @@ def test_compare_catalogue_to_analytic_hmf_with_synthetic_catalogue():
         sigma_grid=sigma_grid,
         rho0=2.775e11 * 0.315,
         h=0.6736,
-        fitting="Sheth-Tormen (1999)",
+        fitting="Watson FOF (2013)",
         num_mass_bins=8,
     )
 
     assert report.total_halos == 500
     assert len(report.bins) == 8
     assert report.completeness_mass_msun_h == 1e12  # 100 * 1e10
+    assert any(
+        row["state"] == "not quantified" for row in report.uncertainty_sources
+    )
     fig = render_hmf_comparison_plot(report)
     assert fig is not None

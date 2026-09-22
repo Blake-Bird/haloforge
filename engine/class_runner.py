@@ -146,6 +146,52 @@ def _background_omega_m_by_z(
     return omega_m_z
 
 
+def _background_cosmic_time_gyr_by_z(cosmo: Any, redshifts: np.ndarray) -> np.ndarray:
+    """Read CLASS/AxiCLASS proper time at each requested redshift in Gyr.
+
+    Evolution Studio must not silently substitute a flat-ΛCDM age relation for
+    an EDE run. CLASS already supplies the background proper-time column, so
+    retain those solver values when the column is available.
+    """
+    get_background = getattr(cosmo, "get_background", None)
+    if not callable(get_background):
+        raise ClassRuntimeError(
+            "CLASS did not expose a background table needed for cosmic time."
+        )
+    background = get_background()
+    z_key = next((key for key in background if key.strip() == "z"), None)
+    time_key = next(
+        (key for key in background if key.strip().lower() == "proper time [gyr]"),
+        None,
+    )
+    if z_key is None or time_key is None:
+        raise ClassRuntimeError(
+            "CLASS background table is missing proper time [Gyr], so cosmic time cannot be recorded."
+        )
+    z_grid = np.asarray(background[z_key], dtype=float)
+    proper_time = np.asarray(background[time_key], dtype=float)
+    if (
+        z_grid.ndim != 1
+        or proper_time.shape != z_grid.shape
+        or z_grid.size < 2
+        or not np.isfinite(z_grid).all()
+        or not np.isfinite(proper_time).all()
+        or np.any(proper_time <= 0)
+    ):
+        raise ClassRuntimeError("CLASS background table has invalid proper-time values.")
+    order = np.argsort(z_grid)
+    z_grid, proper_time = z_grid[order], proper_time[order]
+    requested = np.asarray(redshifts, dtype=float)
+    if requested.min() < z_grid[0] or requested.max() > z_grid[-1]:
+        raise ClassRuntimeError(
+            "Requested redshift falls outside the CLASS proper-time background grid."
+        )
+    values = np.interp(requested, z_grid, proper_time)
+    if not np.isfinite(values).all() or np.any(values <= 0):
+        raise ClassRuntimeError("CLASS produced invalid cosmic-time values.")
+    return values
+
+
 def _compute_direct(params: dict) -> dict[str, Any]:
     try:
         import classy  # type: ignore
@@ -195,6 +241,14 @@ def _compute_direct(params: dict) -> dict[str, Any]:
             # consumers such as EDE Watson SO enforce this dependency.
             background_omega_m = np.asarray([])
             background_warning = str(exc)
+        try:
+            background_cosmic_time = _background_cosmic_time_gyr_by_z(
+                cosmo, redshifts
+            )
+            cosmic_time_warning = ""
+        except ClassRuntimeError as exc:
+            background_cosmic_time = np.asarray([])
+            cosmic_time_warning = str(exc)
         return {
             "k": k,
             "P": p_by_z[0].copy(),
@@ -203,6 +257,8 @@ def _compute_direct(params: dict) -> dict[str, Any]:
             "growth_class": growth,
             "background_omega_m_by_z": background_omega_m,
             "background_warning": background_warning,
+            "background_cosmic_time_gyr_by_z": background_cosmic_time,
+            "cosmic_time_warning": cosmic_time_warning,
             "derived": {
                 "h": float(derived["h"]),
                 "Omega_m": float(derived["Omega_m"]),
@@ -212,6 +268,14 @@ def _compute_direct(params: dict) -> dict[str, Any]:
             "class_settings": settings,
             "classy_path": getattr(classy, "__file__", ""),
             "class_error": "",
+            "solver_execution": {
+                "isolation": "in-process direct execution",
+                "worker_python": sys.executable,
+                "worker_module": "classy.Class",
+                "requested_redshifts": redshifts.tolist(),
+                "stdout": "",
+                "stderr": "",
+            },
         }
     except ClassRuntimeError:
         raise
@@ -240,6 +304,7 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
                     "redshifts",
                     "growth_class",
                     "background_omega_m_by_z",
+                    "background_cosmic_time_gyr_by_z",
                 )
             ):
                 raise ValueError("Worker metadata must not redefine scientific arrays")
@@ -251,6 +316,11 @@ def _read_worker_result(result_path: Path) -> dict[str, Any]:
                 "growth_class": data["growth_class"],
                 "background_omega_m_by_z": data["background_omega_m_by_z"]
                 if "background_omega_m_by_z" in data.files
+                else np.asarray([]),
+                "background_cosmic_time_gyr_by_z": data[
+                    "background_cosmic_time_gyr_by_z"
+                ]
+                if "background_cosmic_time_gyr_by_z" in data.files
                 else np.asarray([]),
                 **metadata,
             }
@@ -382,6 +452,11 @@ def compute_matter_power(params: dict) -> dict[str, Any]:
                         "timeout_seconds": timeout,
                         "attempts": attempt,
                         "transient_retry_limit": transient_retries,
+                        "worker_python": worker_py,
+                        "worker_module": "engine.class_worker",
+                        "requested_redshifts": result["redshifts"].astype(float).tolist(),
+                        "stdout": completed.stdout or "",
+                        "stderr": completed.stderr or "",
                     }
                     return result
                 except ClassRuntimeError as exc:

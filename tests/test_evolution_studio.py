@@ -41,6 +41,72 @@ def test_calculate_evolution_frames(sample_power):
     assert frames[0]["sigma"][50] < frames[-1]["sigma"][50]
 
 
+def test_evolution_uses_stored_multi_redshift_power(sample_power):
+    k, p0 = sample_power
+    zs = np.array([0.0, 1.0, 2.0])
+    # Deliberately non-growth-like source spectra: the middle frame must be
+    # inherited exactly from the supplied CLASS/AxiCLASS grid, not recreated
+    # from the fallback growth approximation.
+    p_by_z = np.vstack([p0, p0 * 0.37, p0 * 0.11])
+    frames = calculate_evolution_frames(
+        k,
+        p0,
+        zs,
+        None,
+        DEFAULT_PARAMS,
+        power_by_z=p_by_z,
+        source_redshifts=zs,
+    )
+    assert np.allclose(frames[1]["P_k"], p_by_z[1])
+    assert frames[1]["power_source"].startswith("exact stored CLASS")
+    assert frames[1]["scientific_status"] == "calculated_linear_theory"
+
+    interpolated = calculate_evolution_frames(
+        k,
+        p0,
+        np.array([1.5]),
+        None,
+        DEFAULT_PARAMS,
+        power_by_z=p_by_z,
+        source_redshifts=zs,
+    )[0]
+    assert interpolated["power_source"].startswith("log P")
+    assert interpolated["scientific_status"] == "approximation"
+    assert interpolated["interpolation_validation_median_fractional_error"] is not None
+
+
+def test_ede_evolution_uses_supplied_solver_cosmic_time_or_marks_it_unavailable(
+    sample_power,
+):
+    k, p0 = sample_power
+    zs = np.array([2.0, 1.0, 0.0])
+    params = dict(DEFAULT_PARAMS, enable_ede=True)
+    frames = calculate_evolution_frames(
+        k,
+        p0,
+        zs,
+        None,
+        params,
+        power_by_z=np.vstack([p0 * 0.11, p0 * 0.37, p0]),
+        source_redshifts=zs,
+        cosmic_time_gyr_by_z=np.array([3.3, 5.9, 13.8]),
+    )
+    assert frames[0]["cosmic_time_gyr"] == pytest.approx(3.3)
+    assert frames[0]["cosmic_time_source"].startswith("stored CLASS/AxiCLASS")
+
+    without_time = calculate_evolution_frames(
+        k,
+        p0,
+        zs,
+        None,
+        params,
+        power_by_z=np.vstack([p0 * 0.11, p0 * 0.37, p0]),
+        source_redshifts=zs,
+    )
+    assert without_time[0]["cosmic_time_gyr"] is None
+    assert "EDE requires" in without_time[0]["cosmic_time_source"]
+
+
 def test_build_evolution_figure_and_contact_sheet(sample_power):
     k, p0 = sample_power
     zs = evolution_redshifts(10.0, 0.0, 4, "uniform_a")

@@ -1,8 +1,8 @@
-"""N-body simulation box setup, particle resolution contracts, and physical validation.
+"""Collisionless N-body box setup, particle-resolution contracts, and validation.
 
 Computes exact particle mass, mean separation, Nyquist frequency, softening policy,
 halo-mass particle count thresholds (20, 50, 100, 300, 1000 particles), memory footprint,
-and snapshot sizes for cosmological dark matter and hydrodynamic SPH boxes.
+and snapshot sizes for cosmological collisionless dark-matter boxes.
 """
 
 from __future__ import annotations
@@ -51,6 +51,11 @@ def compute_box_resolution(
       - Particle mass: h^-1 M_sun
       - Softening: h^-1 kpc (Plummer equivalent)
     """
+    if is_hydro:
+        raise ValueError(
+            "Hydrodynamic/SPH resolution estimates are not supported. HaloForge "
+            "currently plans collisionless DM-only boxes."
+        )
     if box_size_mpc_h <= 0 or not math.isfinite(box_size_mpc_h):
         raise ValueError("Box size must be positive and finite")
     if particles_per_dim < 16 or not isinstance(particles_per_dim, int):
@@ -58,7 +63,6 @@ def compute_box_resolution(
 
     p = params or DEFAULT_PARAMS
     omega_m = float(p.get("Omega_m", 0.315))
-    omega_b = float(p.get("Omega_b", 0.049))
 
     # Critical density at z=0: rho_crit = 3 H0^2 / (8 pi G)
     # in units of (h^-1 M_sun) / (h^-1 Mpc)^3:
@@ -66,7 +70,7 @@ def compute_box_resolution(
     # In comoving (h^-1 Mpc)^3 and h^-1 M_sun, rho_crit_comoving = 2.77536627e11
     rho_crit_comoving = 2.77536627e11  # h^-1 M_sun / (h^-1 Mpc)^3
 
-    dm_density = (omega_m - omega_b if is_hydro else omega_m) * rho_crit_comoving
+    dm_density = omega_m * rho_crit_comoving
     total_particles = int(particles_per_dim**3)
     box_volume = float(box_size_mpc_h**3)
     particle_mass = (dm_density * box_volume) / total_particles
@@ -89,7 +93,7 @@ def compute_box_resolution(
 
     # Memory and snapshot size estimations:
     # GADGET-4 PartType1: pos(3x8) + vel(3x4) + id(8) = 44 bytes bare, ~68 bytes with trees & domain
-    bytes_per_particle = 120.0 if is_hydro else 68.0
+    bytes_per_particle = 68.0
     est_memory_gb = float(total_particles * bytes_per_particle * 2.2 / (1024**3))
     est_snapshot_gb = float(total_particles * 36.0 / (1024**3))
 

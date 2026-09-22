@@ -21,15 +21,12 @@ class HaloRecord:
     x: float
     y: float
     z: float
-    vx: float
-    vy: float
-    vz: float
+    vx_snapshot_raw: float
+    vy_snapshot_raw: float
+    vz_snapshot_raw: float
     n_particles: int
     M_fof_msun_h: float
-    M_200m_msun_h: float
-    M_200c_msun_h: float
-    R_200m_kpc_h: float
-    sigma_v_km_s: float
+    velocity_dispersion_snapshot_raw: float
 
 
 @dataclass
@@ -39,6 +36,7 @@ class HaloCatalogue:
     particle_mass_msun_h: float
     linking_length_b: float
     min_particles: int
+    omega_m: float
     halos: list[HaloRecord]
     is_empty_due_to_resolution: bool
     summary: str
@@ -53,10 +51,14 @@ def find_fof_halos(
     *,
     linking_length_b: float = 0.2,
     min_particles: int = 20,
+    omega_m: float,
 ) -> HaloCatalogue:
-    """Run Friends-of-Friends (FOF) halo finding with periodic boundary conditions.
+    """Run periodic Friends-of-Friends (FOF) group finding.
 
-    Linking length: b * mean_particle_separation.
+    The output mass is strictly the FOF group mass for the supplied linking
+    length.  It deliberately does *not* manufacture spherical-overdensity
+    (M200m/M200c) masses or radii: those require a separately validated SO
+    finder and cannot be inferred from a FOF particle count.
     """
     n_part = len(positions)
     if n_part == 0:
@@ -66,13 +68,22 @@ def find_fof_halos(
             particle_mass_msun_h=float(particle_mass_msun_h),
             linking_length_b=float(linking_length_b),
             min_particles=int(min_particles),
+            omega_m=float(omega_m),
             halos=[],
             is_empty_due_to_resolution=True,
             summary="Zero particles supplied to halo finder.",
         )
 
-    particles_per_dim = int(round(n_part ** (1.0 / 3.0)))
-    mean_sep = box_size_mpc_h / max(particles_per_dim, 1)
+    if not np.isfinite(omega_m) or not 0.0 < float(omega_m) <= 1.0:
+        raise ValueError("omega_m must be a finite density fraction in (0, 1]")
+    if not np.isfinite(linking_length_b) or not 0.0 < float(linking_length_b) <= 1.0:
+        raise ValueError("linking_length_b must be finite and in (0, 1]")
+    if min_particles < 2:
+        raise ValueError("min_particles must be at least 2")
+
+    # This definition remains correct for snapshots whose particle count is
+    # not a perfect cube (for example after a selection or a non-cubic mesh).
+    mean_sep = (box_size_mpc_h**3 / n_part) ** (1.0 / 3.0)
     link_dist = linking_length_b * mean_sep
 
     # Periodic KDTree
@@ -109,10 +120,6 @@ def find_fof_halos(
     # Filter by minimum particle threshold
     halos = []
     halo_counter = 1
-    rho_crit_comoving = 2.77536627e11  # h^-1 M_sun / (h^-1 Mpc)^3
-    omega_m = 0.315
-    rho_mean = omega_m * rho_crit_comoving
-
     for root, p_indices in groups.items():
         count = len(p_indices)
         if count >= min_particles:
@@ -135,31 +142,18 @@ def find_fof_halos(
             sig_v = float(np.std(p_vel))
 
             m_fof = count * particle_mass_msun_h
-            # Approximate R200m and M200m from spherical collapse relation:
-            # M_200m = (4/3) pi R_200m^3 (200 rho_mean)
-            r_200m_mpc = (m_fof / ((4.0 / 3.0) * np.pi * 200.0 * rho_mean)) ** (
-                1.0 / 3.0
-            )
-            r_200m_kpc = float(r_200m_mpc * 1000.0)
-
-            # M_200c ~ M_200m * (Omega_m(z)) if approximate
-            m_200c = m_fof * 0.85
-
             halos.append(
                 HaloRecord(
                     halo_id=halo_counter,
                     x=float(com[0]),
                     y=float(com[1]),
                     z=float(com[2]),
-                    vx=float(mean_vel[0]),
-                    vy=float(mean_vel[1]),
-                    vz=float(mean_vel[2]),
+                    vx_snapshot_raw=float(mean_vel[0]),
+                    vy_snapshot_raw=float(mean_vel[1]),
+                    vz_snapshot_raw=float(mean_vel[2]),
                     n_particles=count,
                     M_fof_msun_h=float(m_fof),
-                    M_200m_msun_h=float(m_fof),
-                    M_200c_msun_h=float(m_200c),
-                    R_200m_kpc_h=r_200m_kpc,
-                    sigma_v_km_s=sig_v,
+                    velocity_dispersion_snapshot_raw=sig_v,
                 )
             )
             halo_counter += 1
@@ -186,6 +180,7 @@ def find_fof_halos(
         particle_mass_msun_h=float(particle_mass_msun_h),
         linking_length_b=float(linking_length_b),
         min_particles=int(min_particles),
+        omega_m=float(omega_m),
         halos=halos,
         is_empty_due_to_resolution=is_empty,
         summary=summary,
@@ -201,15 +196,12 @@ def catalogue_to_dataframe(catalogue: HaloCatalogue) -> pd.DataFrame:
                 "x",
                 "y",
                 "z",
-                "vx",
-                "vy",
-                "vz",
+                "vx_snapshot_raw",
+                "vy_snapshot_raw",
+                "vz_snapshot_raw",
                 "n_particles",
                 "M_fof_msun_h",
-                "M_200m_msun_h",
-                "M_200c_msun_h",
-                "R_200m_kpc_h",
-                "sigma_v_km_s",
+                "velocity_dispersion_snapshot_raw",
             ]
         )
     return pd.DataFrame([asdict(h) for h in catalogue.halos])
@@ -263,7 +255,7 @@ def render_3d_halo_view(
                     opacity=0.85,
                 ),
                 text=[
-                    f"Halo #{row['halo_id']}<br>Mass: {row['M_fof_msun_h']:.2e} h⁻¹ M☉<br>Particles: {int(row['n_particles']):,}<br>σ_v: {row['sigma_v_km_s']:.1f} km/s"
+                    f"Halo #{row['halo_id']}<br>Mass: {row['M_fof_msun_h']:.2e} h⁻¹ M☉<br>Particles: {int(row['n_particles']):,}<br>Velocity dispersion: {row['velocity_dispersion_snapshot_raw']:.3g} (snapshot convention)"
                     for _, row in display_df.iterrows()
                 ],
                 hoverinfo="text",

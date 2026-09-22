@@ -133,12 +133,31 @@ MODULES = (
     ),
 )
 
+# These names are the learner-facing experiments in Explore.  Keeping the
+# mapping alongside the teaching materials makes the handoff deliberate and
+# testable instead of asking a student to infer which playground to open.
+GUIDED_EXPERIMENT_BY_MODULE = {
+    "primordial-tilt": "More small-scale power",
+    "numerical-coverage": "Why kmax matters",
+    "ede-structure": "Early expansion",
+    "rare-tail-statistics": "Early expansion",
+    "numerical-methods": "Why kmax matters",
+}
+
 
 def get_module(identifier: str) -> LabModule:
     for module in MODULES:
         if module.identifier == identifier:
             return module
     raise KeyError(f"Unknown HaloForge lab module: {identifier}")
+
+
+def guided_experiment_for_module(module: LabModule) -> str:
+    """Return the controlled Explore experiment that begins a live module."""
+    try:
+        return GUIDED_EXPERIMENT_BY_MODULE[module.identifier]
+    except KeyError as exc:  # Keeps new modules from silently losing a live path.
+        raise ValueError(f"No guided experiment is configured for {module.identifier}") from exc
 
 
 def student_handout(module: LabModule) -> str:

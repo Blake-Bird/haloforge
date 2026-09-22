@@ -9,15 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import perf_counter
 from typing import Any, Callable
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-
-from config.defaults import DEFAULT_PARAMS
-
 
 class JobStatus(str, Enum):
     PENDING = "pending"
@@ -37,6 +37,7 @@ class CampaignMemberResult:
     h: float | None = None
     elapsed_seconds: float = 0.0
     error_message: str | None = None
+    evidence: dict[str, Any] | None = None
 
 
 @dataclass
@@ -58,7 +59,10 @@ def create_campaign(
 ) -> CampaignRecord:
     """Initialize an immutable campaign plan with unique member IDs."""
     timestamp = datetime.now(timezone.utc).isoformat()
-    cid = f"campaign_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    cid = (
+        f"campaign_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_"
+        f"{uuid4().hex[:10]}"
+    )
     members = []
     for idx, combo in enumerate(parameter_combinations):
         mid = f"{cid}_m{idx + 1:03d}"
@@ -69,14 +73,62 @@ def create_campaign(
                 status=JobStatus.PENDING,
             )
         )
+    record_metadata = dict(metadata or {})
+    record_metadata.setdefault("lifecycle_state", "pending")
     return CampaignRecord(
         campaign_id=cid,
         name=name.strip() or cid,
         created_at=timestamp,
         design_type=design_type,
         members=members,
-        metadata=metadata or {},
+        metadata=record_metadata,
     )
+
+
+def campaign_counts(campaign: CampaignRecord) -> dict[str, int]:
+    """Return stable per-state counts for a persisted campaign queue."""
+    return {
+        status.value: sum(member.status == status for member in campaign.members)
+        for status in JobStatus
+    }
+
+
+def pause_campaign(campaign: CampaignRecord) -> None:
+    """Pause future batches; in-flight solver processes are never killed silently."""
+    if any(member.status == JobStatus.RUNNING for member in campaign.members):
+        raise RuntimeError("Campaign has running members and cannot be paused safely")
+    campaign.metadata["lifecycle_state"] = "paused"
+
+
+def resume_campaign(campaign: CampaignRecord) -> None:
+    """Make a paused campaign eligible for its next explicit batch."""
+    if campaign.metadata.get("lifecycle_state") == "cancelled":
+        raise RuntimeError("Cancelled campaigns cannot be resumed; retry selected members instead")
+    campaign.metadata["lifecycle_state"] = "pending"
+
+
+def cancel_pending_members(campaign: CampaignRecord) -> int:
+    """Cancel only unstarted members, preserving all completed evidence."""
+    cancelled = 0
+    for member in campaign.members:
+        if member.status == JobStatus.PENDING:
+            member.status = JobStatus.CANCELLED
+            cancelled += 1
+    campaign.metadata["lifecycle_state"] = "cancelled"
+    return cancelled
+
+
+def retry_failed_members(campaign: CampaignRecord) -> int:
+    """Requeue failed members without overwriting their original parameters."""
+    retried = 0
+    for member in campaign.members:
+        if member.status == JobStatus.FAILED:
+            member.status = JobStatus.PENDING
+            member.error_message = None
+            retried += 1
+    if retried:
+        campaign.metadata["lifecycle_state"] = "pending"
+    return retried
 
 
 def execute_campaign_step(
@@ -84,29 +136,74 @@ def execute_campaign_step(
     evaluator: Callable[[dict[str, Any]], dict[str, Any]],
     *,
     max_steps: int = 1,
+    worker_count: int = 1,
+    on_member_complete: Callable[[CampaignRecord], None] | None = None,
 ) -> bool:
-    """Execute up to max_steps pending jobs sequentially or with thread pool.
+    """Execute a bounded batch of pending campaign members.
 
-    Returns True if work was completed, False if campaign is already complete.
+    ``worker_count`` is intentionally explicit: callers must surface it to the
+    researcher and persist it in campaign metadata.  The evaluator may launch
+    an isolated external solver, so threads coordinate jobs but do not claim
+    that a solver itself is thread-safe.
+
+    Returns True when at least one member was attempted, False when there is
+    no pending work.
     """
-    executed = 0
-    for member in campaign.members:
-        if member.status == JobStatus.PENDING:
-            member.status = JobStatus.RUNNING
+    if not isinstance(max_steps, int) or max_steps < 1:
+        raise ValueError("max_steps must be a positive integer")
+    if not isinstance(worker_count, int) or worker_count < 1:
+        raise ValueError("worker_count must be a positive integer")
+    if campaign.metadata.get("lifecycle_state") in {"paused", "cancelled"}:
+        return False
+
+    pending = [m for m in campaign.members if m.status == JobStatus.PENDING]
+    batch = pending[:max_steps]
+    if not batch:
+        return False
+
+    for member in batch:
+        member.status = JobStatus.RUNNING
+        member.error_message = None
+    campaign.metadata["lifecycle_state"] = "running"
+
+    def evaluate(member: CampaignMemberResult) -> tuple[CampaignMemberResult, dict[str, Any], float]:
+        started = perf_counter()
+        # ``member.params`` is a controlled delta. The caller owns the
+        # immutable campaign baseline and must merge it exactly once. Adding
+        # global defaults here previously overwrote a saved baseline's EDE and
+        # numerical settings without showing that change in the member diff.
+        result = evaluator(dict(member.params))
+        return member, result, perf_counter() - started
+
+    with ThreadPoolExecutor(max_workers=min(worker_count, len(batch))) as pool:
+        futures = {pool.submit(evaluate, member): member for member in batch}
+        for future in as_completed(futures):
+            member = futures[future]
             try:
-                result = evaluator({**DEFAULT_PARAMS, **member.params})
-                member.sigma8 = float(result.get("sigma8", 0.0))
-                member.Omega_m = float(result.get("Omega_m", 0.315))
-                member.h = float(result.get("h", 0.6736))
-                member.elapsed_seconds = float(result.get("elapsed_seconds", 0.1))
+                _member, result, measured_elapsed = future.result()
+                member.sigma8 = float(result["sigma8"])
+                member.Omega_m = float(result["Omega_m"])
+                member.h = float(result["h"])
+                member.elapsed_seconds = float(result.get("elapsed_seconds", measured_elapsed))
+                member.evidence = {
+                    key: value
+                    for key, value in result.items()
+                    if key
+                    not in {"sigma8", "Omega_m", "h", "elapsed_seconds"}
+                }
                 member.status = JobStatus.COMPLETED
             except Exception as exc:
                 member.status = JobStatus.FAILED
                 member.error_message = str(exc)
-            executed += 1
-            if executed >= max_steps:
-                break
-    return executed > 0
+            if on_member_complete is not None:
+                on_member_complete(campaign)
+    if not any(member.status == JobStatus.PENDING for member in campaign.members):
+        campaign.metadata["lifecycle_state"] = "completed"
+    else:
+        campaign.metadata["lifecycle_state"] = "pending"
+    if on_member_complete is not None:
+        on_member_complete(campaign)
+    return True
 
 
 def campaign_to_dataframe(campaign: CampaignRecord) -> pd.DataFrame:
@@ -119,6 +216,7 @@ def campaign_to_dataframe(campaign: CampaignRecord) -> pd.DataFrame:
             "sigma8": m.sigma8,
             "elapsed_s": m.elapsed_seconds,
             "error": m.error_message or "",
+            "backend": (m.evidence or {}).get("class_status", ""),
             **m.params,
         }
         rows.append(row)

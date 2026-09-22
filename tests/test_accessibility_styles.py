@@ -20,3 +20,11 @@ def test_guided_causal_motion_has_a_named_visual_and_respects_shared_motion_poli
     assert "@media (prefers-reduced-motion: reduce)" in css
     assert "def causal_reveal_visual" in app
     assert "Motion is illustrative, not evidence" in app
+
+
+def test_light_theme_explicitly_keeps_streamlit_alert_copy_readable():
+    app = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert '[data-testid="stAlert"]' in app
+    assert '[data-testid="stAlert"] *{color:#132126!important}' in app

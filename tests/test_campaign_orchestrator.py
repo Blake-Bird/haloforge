@@ -11,18 +11,30 @@ from engine.campaign_orchestrator import (
     JobStatus,
     create_campaign,
     execute_campaign_step,
+    campaign_counts,
+    cancel_pending_members,
     campaign_to_dataframe,
     campaign_response_figure,
     campaign_parallel_coordinates,
     compute_campaign_sensitivities,
+    pause_campaign,
+    resume_campaign,
+    retry_failed_members,
 )
 
 
 def test_campaign_resource_estimates():
-    est = estimate_campaign_resources(16, worker_count=4)
+    est = estimate_campaign_resources(16, worker_count=4, seconds_per_run=2.0)
     assert est.total_runs == 16
     assert est.estimated_wall_seconds < est.estimated_cpu_seconds
     assert est.recommended_workers >= 1
+
+
+def test_campaign_resource_estimate_refuses_to_invent_solver_duration():
+    est = estimate_campaign_resources(16, worker_count=4)
+    assert est.estimated_cpu_seconds is None
+    assert est.estimated_wall_seconds is None
+    assert "No completed" in est.timing_basis
 
 
 def test_latin_hypercube_sampling():
@@ -85,3 +97,50 @@ def test_campaign_orchestration_lifecycle():
 
     par_fig = campaign_parallel_coordinates(df, ["H0", "n_s"], "sigma8")
     assert par_fig.data is not None
+
+
+def test_campaign_worker_count_executes_a_bounded_batch():
+    camp = create_campaign(
+        "Parallel test", "grid", [{"H0": 66.0}, {"H0": 67.0}, {"H0": 68.0}]
+    )
+
+    def evaluator(params):
+        return {
+            "sigma8": 0.8,
+            "Omega_m": 0.3,
+            "h": params["H0"] / 100.0,
+            "class_status": "CLASS",
+        }
+
+    assert execute_campaign_step(camp, evaluator, max_steps=3, worker_count=2)
+    assert all(member.status == JobStatus.COMPLETED for member in camp.members)
+    assert all(member.evidence == {"class_status": "CLASS"} for member in camp.members)
+
+
+def test_campaign_executor_passes_only_the_declared_member_delta():
+    camp = create_campaign("Baseline contract", "grid", [{"H0": 67.0}])
+    received = []
+
+    def evaluator(delta):
+        received.append(delta)
+        return {"sigma8": 0.8, "Omega_m": 0.3, "h": 0.67}
+
+    execute_campaign_step(camp, evaluator, max_steps=1)
+    assert received == [{"H0": 67.0}]
+
+
+def test_campaign_pause_cancel_retry_lifecycle():
+    camp = create_campaign("Lifecycle", "grid", [{"H0": 67.0}, {"H0": 68.0}])
+    pause_campaign(camp)
+    assert camp.metadata["lifecycle_state"] == "paused"
+    assert not execute_campaign_step(
+        camp,
+        lambda _: {"sigma8": 0.8, "Omega_m": 0.3, "h": 0.67},
+    )
+    resume_campaign(camp)
+    camp.members[0].status = JobStatus.FAILED
+    camp.members[0].error_message = "solver failed"
+    assert retry_failed_members(camp) == 1
+    assert campaign_counts(camp)["pending"] == 2
+    assert cancel_pending_members(camp) == 2
+    assert campaign_counts(camp)["cancelled"] == 2

@@ -13,6 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from engine.halo_catalogue import HaloCatalogue
+from engine.contracts import fit_contract
 from engine.hmf import hmf_from_sigma
 
 
@@ -44,18 +45,19 @@ class HMFNBodyComparisonReport:
     mass_definition_used: str
     chi2_per_dof: float
     bins: list[HMFBinComparison]
+    uncertainty_sources: list[dict[str, str]]
     interpretation: str
 
 
 def compatible_mass_column(fitting: str) -> str:
-    """Return the catalogue mass definition compatible with the requested analytic HMF."""
-    fit_lower = fitting.lower()
-    if "tinker" in fit_lower:
-        return "M_200m_msun_h"
-    elif "watson so" in fit_lower:
-        return "M_200m_msun_h"
-    else:  # Sheth-Tormen, Watson FOF, Press-Schechter, Reed
-        return "M_fof_msun_h"
+    """Return a mass column only when the selected HMF is FOF b=0.2 compatible."""
+    contract = fit_contract(fitting)
+    if contract.mass_definition != "fof_b0.2":
+        raise ValueError(
+            f"{fitting} requires {contract.mass_definition}, but this catalogue "
+            "contains only FOF b=0.2 masses. No mass-definition conversion is implied."
+        )
+    return "M_fof_msun_h"
 
 
 def compare_catalogue_to_analytic_hmf(
@@ -70,7 +72,17 @@ def compare_catalogue_to_analytic_hmf(
     num_mass_bins: int = 14,
     min_particles_complete: int = 100,
 ) -> HMFNBodyComparisonReport:
-    """Evaluate finite-bin abundance against integrated analytic HMF."""
+    """Evaluate an FOF b=0.2 catalogue against a matching finite-bin HMF.
+
+    This is a descriptive comparison, not an accuracy verdict: it currently
+    includes Poisson counting uncertainty only.  Volume, force-resolution,
+    halo-finder, and fit-calibration systematics must be assessed separately.
+    """
+    mass_col = compatible_mass_column(fitting)
+    if not np.isclose(catalogue.linking_length_b, 0.2, rtol=0.0, atol=1.0e-12):
+        raise ValueError(
+            "This comparison requires an FOF catalogue with linking length b=0.2."
+        )
     if not catalogue.halos:
         return HMFNBodyComparisonReport(
             redshift=catalogue.redshift,
@@ -81,9 +93,10 @@ def compare_catalogue_to_analytic_hmf(
             total_halos=0,
             complete_halos=0,
             fitting=fitting,
-            mass_definition_used=compatible_mass_column(fitting),
+            mass_definition_used=mass_col,
             chi2_per_dof=0.0,
             bins=[],
+            uncertainty_sources=_uncertainty_sources(catalogue, fitting),
             interpretation="No halos in catalogue at this redshift.",
         )
 
@@ -91,7 +104,6 @@ def compare_catalogue_to_analytic_hmf(
     p_mass = catalogue.particle_mass_msun_h
     completeness_mass = p_mass * min_particles_complete
 
-    mass_col = compatible_mass_column(fitting)
     raw_masses = np.array(
         [getattr(h_rec, mass_col) for h_rec in catalogue.halos], dtype=float
     )
@@ -108,7 +120,15 @@ def compare_catalogue_to_analytic_hmf(
         np.interp(np.log(fine_masses), np.log(mass_grid_h), np.log(sigma_grid))
     )
     fine_dndlnM = hmf_from_sigma(
-        fine_masses / h, fine_sigmas, rho0, h, fitting, delta_c, z=catalogue.redshift
+        fine_masses / h,
+        fine_sigmas,
+        rho0,
+        h,
+        fitting,
+        delta_c,
+        z=catalogue.redshift,
+        window_type="Top-hat",
+        mass_definition="fof_b0.2",
     )
 
     bin_results = []
@@ -168,21 +188,12 @@ def compare_catalogue_to_analytic_hmf(
 
     chi2_dof = float(chi2_sum / max(complete_bins, 1))
 
-    if chi2_dof < 1.5:
-        interp = (
-            f"Strong agreement with {fitting} (χ²/dof = {chi2_dof:.2f}). "
-            "Catalogue abundance matches analytic prediction within expected Poisson sample variance."
-        )
-    elif chi2_dof < 3.0:
-        interp = (
-            f"Moderate discrepancy with {fitting} (χ²/dof = {chi2_dof:.2f}). "
-            "Attributable to finite-volume box effects or minor halo finder calibration differences."
-        )
-    else:
-        interp = (
-            f"Significant discrepancy with {fitting} (χ²/dof = {chi2_dof:.2f}). "
-            "Check mass definition consistency, box volume sample variance, or fit calibration limits."
-        )
+    interp = (
+        f"Descriptive FOF b=0.2 finite-bin comparison to {fitting} (χ²/occupied "
+        f"complete bin = {chi2_dof:.2f}). Error bars are Poisson only; this is not "
+        "a validated agreement claim and omits finite-volume, force-resolution, "
+        "halo-finder, and fitting-function calibration systematics."
+    )
 
     return HMFNBodyComparisonReport(
         redshift=catalogue.redshift,
@@ -195,8 +206,54 @@ def compare_catalogue_to_analytic_hmf(
         mass_definition_used=mass_col,
         chi2_per_dof=chi2_dof,
         bins=bin_results,
+        uncertainty_sources=_uncertainty_sources(catalogue, fitting),
         interpretation=interp,
     )
+
+
+def _uncertainty_sources(catalogue: HaloCatalogue, fitting: str) -> list[dict[str, str]]:
+    """State each uncertainty source without inventing a combined error bar."""
+    return [
+        {
+            "source": "Poisson counting",
+            "state": "included",
+            "detail": "Per-bin √N errors are plotted for occupied bins.",
+        },
+        {
+            "source": "Mass resolution",
+            "state": "masked",
+            "detail": (
+                f"Bins below {100 * catalogue.particle_mass_msun_h:.3e} h⁻¹ M☉ "
+                "are marked resolution-limited (100-particle criterion)."
+            ),
+        },
+        {
+            "source": "Finite volume and sample variance",
+            "state": "not quantified",
+            "detail": (
+                "Requires repeated volumes or a documented covariance/bias model; "
+                "it is not folded into the plotted Poisson bars."
+            ),
+        },
+        {
+            "source": "Force and time-step resolution",
+            "state": "not quantified",
+            "detail": "Requires the recorded GADGET-4 configuration and convergence runs.",
+        },
+        {
+            "source": "Halo-finder systematics",
+            "state": "not quantified",
+            "detail": "The in-app periodic FOF implementation has no external finder cross-validation yet.",
+        },
+        {
+            "source": "HMF fit calibration",
+            "state": "not quantified",
+            "detail": (
+                f"{fitting} is evaluated at the matching FOF b=0.2 definition, but "
+                "fit calibration uncertainty is not a numeric error bar here."
+            ),
+        },
+    ]
 
 
 def render_hmf_comparison_plot(
@@ -215,7 +272,7 @@ def render_hmf_comparison_plot(
         row_heights=[0.68, 0.32],
         subplot_titles=[
             f"Differential Halo Mass Function vs {report.fitting} (z = {report.redshift:.2f})",
-            "Ratio: N-body / Analytic Theory",
+            "Ratio: FOF catalogue / Analytic Theory",
         ],
     )
 
@@ -249,7 +306,7 @@ def render_hmf_comparison_plot(
                 x=[b.m_center_msun_h for b in complete_bins],
                 y=[b.sim_dndlnM for b in complete_bins],
                 mode="markers",
-                name="N-body (Complete >= 100 particles)",
+                name="FOF catalogue (Complete ≥ 100 particles)",
                 marker=dict(size=8, color="#45d49d", symbol="circle"),
                 error_y=dict(
                     type="data",
@@ -268,7 +325,7 @@ def render_hmf_comparison_plot(
                 x=[b.m_center_msun_h for b in incomplete_bins],
                 y=[b.sim_dndlnM for b in incomplete_bins],
                 mode="markers",
-                name="N-body (Resolution Limited < 100 particles)",
+                name="FOF catalogue (Resolution limited < 100 particles)",
                 marker=dict(size=7, color="#ff718b", symbol="diamond-open"),
                 error_y=dict(
                     type="data",

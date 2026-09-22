@@ -15,6 +15,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from engine.fitting_functions import fitting_values
+from engine.scientific_status import APPROXIMATION, CALCULATED_LINEAR_THEORY
 from engine.sigma import dlog_sigma_dlog_M
 from engine.windows import window_squared
 
@@ -70,6 +71,9 @@ def calculate_evolution_frames(
     growth_factors: np.ndarray | None,
     params: dict,
     *,
+    power_by_z: np.ndarray | None = None,
+    source_redshifts: np.ndarray | None = None,
+    cosmic_time_gyr_by_z: np.ndarray | None = None,
     mass_min_exp: float = 8.0,
     mass_max_exp: float = 16.0,
     mass_points: int = 100,
@@ -77,12 +81,101 @@ def calculate_evolution_frames(
 ) -> list[dict[str, Any]]:
     """Compute physical observable frames across an exact redshift sequence.
 
-    Uses linear growth scaling D(z) for P(k,z) when pre-solved Boltzmann grids
-    do not contain arbitrary intermediate frames, or uses explicit Boltzmann inputs.
+    Uses explicit CLASS/AxiCLASS spectra when a matching source grid is supplied.
+    Intermediate frames are interpolated in log P and log a between calculated
+    source spectra. Linear-growth scaling is retained only as a clearly
+    distinguishable fallback for callers without a redshift-resolved spectrum.
     """
     k = np.asarray(power_k, dtype=float)
     p0 = np.asarray(power_p_z0, dtype=float)
     zs = np.asarray(redshifts, dtype=float)
+    if k.ndim != 1 or p0.shape != k.shape or np.any(k <= 0) or np.any(p0 <= 0):
+        raise ValueError("Evolution requires matching positive k and P(k) arrays")
+    if zs.ndim != 1 or zs.size == 0 or np.any(~np.isfinite(zs)) or np.any(zs < 0):
+        raise ValueError("Evolution redshifts must be a nonempty finite nonnegative array")
+
+    solver_cosmic_time: np.ndarray | None = None
+    if cosmic_time_gyr_by_z is not None:
+        candidate_time = np.asarray(cosmic_time_gyr_by_z, dtype=float)
+        if (
+            candidate_time.shape != zs.shape
+            or not np.isfinite(candidate_time).all()
+            or np.any(candidate_time <= 0)
+            or np.any(np.diff(candidate_time) <= 0)
+        ):
+            raise ValueError(
+                "Solver cosmic-time values must match the evolution grid and decrease with redshift"
+            )
+        solver_cosmic_time = candidate_time
+
+    explicit_spectra: np.ndarray | None = None
+    interpolation_source = "linear-growth approximation from one spectrum"
+    source_z: np.ndarray | None = None
+    source_validation: dict[float, tuple[float, float]] = {}
+    validation_summary: tuple[float, float] | None = None
+    if power_by_z is not None or source_redshifts is not None:
+        if power_by_z is None or source_redshifts is None:
+            raise ValueError("power_by_z and source_redshifts must be supplied together")
+        source_z = np.asarray(source_redshifts, dtype=float)
+        source_power = np.asarray(power_by_z, dtype=float)
+        if (
+            source_z.ndim != 1
+            or source_z.size < 2
+            or source_power.shape != (source_z.size, k.size)
+            or np.any(~np.isfinite(source_z))
+            or np.any(source_z < 0)
+            or np.any(~np.isfinite(source_power))
+            or np.any(source_power <= 0)
+        ):
+            raise ValueError("Stored multi-redshift power spectra are invalid")
+        order = np.argsort(source_z)
+        source_z, source_power = source_z[order], source_power[order]
+        if np.any(np.diff(source_z) <= 0):
+            raise ValueError("Stored redshifts must be strictly distinct")
+        if float(zs.min()) < float(source_z.min()) or float(zs.max()) > float(source_z.max()):
+            raise ValueError(
+                "Requested evolution frames fall outside the calculated CLASS/AxiCLASS redshift grid; extrapolation is not permitted."
+            )
+        source_log_a = np.log(1.0 / (1.0 + source_z))[::-1]
+        source_log_p = np.log(source_power[::-1])
+        # Withheld interior solver samples quantify the local log-P/log-a
+        # interpolation error rather than presenting interpolation as exact.
+        for index in range(1, source_z.size - 1):
+            left_a = np.log(1.0 / (1.0 + source_z[index - 1]))
+            right_a = np.log(1.0 / (1.0 + source_z[index + 1]))
+            target_a = np.log(1.0 / (1.0 + source_z[index]))
+            fraction = (target_a - left_a) / (right_a - left_a)
+            estimate = np.exp(
+                np.log(source_power[index - 1])
+                + fraction
+                * (np.log(source_power[index + 1]) - np.log(source_power[index - 1]))
+            )
+            fractional = np.abs(estimate / source_power[index] - 1.0)
+            source_validation[float(source_z[index])] = (
+                float(np.median(fractional)),
+                float(np.max(fractional)),
+            )
+        if source_validation:
+            values = np.asarray(list(source_validation.values()), dtype=float)
+            validation_summary = (
+                float(np.median(values[:, 0])),
+                float(np.max(values[:, 1])),
+            )
+        target_log_a = np.log(1.0 / (1.0 + zs))
+        explicit_spectra = np.vstack(
+            [
+                np.exp(
+                    np.array(
+                        [
+                            np.interp(target_log_a[i], source_log_a, source_log_p[:, j])
+                            for j in range(k.size)
+                        ]
+                    )
+                )
+                for i in range(zs.size)
+            ]
+        )
+        interpolation_source = "log P–log a interpolation of stored CLASS/AxiCLASS spectra"
     h = float(params.get("H0", 67.36)) / 100.0
     omega_m0 = float(params.get("Omega_m", 0.315))
     rho_crit_0 = 2.775e11 * (h**2)  # Msun / Mpc^3
@@ -131,7 +224,28 @@ def calculate_evolution_frames(
     for idx, z_val in enumerate(zs):
         scale_factor = 1.0 / (1.0 + float(z_val))
         d_val = float(growth[idx])
-        p_z = p0 * (d_val**2)
+        p_z = explicit_spectra[idx] if explicit_spectra is not None else p0 * (d_val**2)
+        matching_source = (
+            np.flatnonzero(np.isclose(source_z, z_val, rtol=0.0, atol=1e-10))
+            if source_z is not None
+            else np.asarray([], dtype=int)
+        )
+        exact_spectrum = matching_source.size > 0
+        frame_status = (
+            CALCULATED_LINEAR_THEORY
+            if exact_spectrum
+            else APPROXIMATION
+        )
+        frame_power_source = (
+            "exact stored CLASS/AxiCLASS spectrum"
+            if exact_spectrum
+            else interpolation_source
+        )
+        local_validation = (
+            source_validation.get(float(source_z[matching_source[0]]))
+            if exact_spectrum and source_z is not None
+            else validation_summary
+        )
         delta2 = (k**3) * p_z / (2.0 * (np.pi**2))
         knl = nonlinear_scale_knl(k, delta2)
 
@@ -193,12 +307,33 @@ def calculate_evolution_frames(
                 )
             )
 
+        if solver_cosmic_time is not None:
+            cosmic_time = float(solver_cosmic_time[idx])
+            cosmic_time_source = "stored CLASS/AxiCLASS background proper time"
+        elif params.get("enable_ede"):
+            cosmic_time = None
+            cosmic_time_source = (
+                "unavailable: EDE requires stored CLASS/AxiCLASS background proper time"
+            )
+        else:
+            cosmic_time = cosmic_time_gyr(z_val, params)
+            cosmic_time_source = "flat ΛCDM background approximation"
+
         frame_data = {
             "frame_index": idx,
             "redshift": float(z_val),
             "scale_factor": scale_factor,
-            "cosmic_time_gyr": cosmic_time_gyr(z_val, params),
+            "cosmic_time_gyr": cosmic_time,
+            "cosmic_time_source": cosmic_time_source,
             "growth_factor": d_val,
+            "power_source": frame_power_source,
+            "scientific_status": frame_status,
+            "interpolation_validation_median_fractional_error": (
+                local_validation[0] if local_validation is not None else None
+            ),
+            "interpolation_validation_max_fractional_error": (
+                local_validation[1] if local_validation is not None else None
+            ),
             "k": k.tolist(),
             "P_k": p_z.tolist(),
             "delta2": delta2.tolist(),
@@ -404,8 +539,12 @@ def build_evolution_figure(
     fig.update_yaxes(type="log" if is_log_y else "linear", title=y_label)
 
     # Annotate frame epoch
+    cosmic_time = curr.get("cosmic_time_gyr")
+    time_label = (
+        f"{float(cosmic_time):.2f} Gyr" if cosmic_time is not None else "unavailable"
+    )
     epoch_text = (
-        f"<b>z = {curr['redshift']:.2f}</b> · a = {curr['scale_factor']:.3f} · t = {curr['cosmic_time_gyr']:.2f} Gyr<br>"
+        f"<b>z = {curr['redshift']:.2f}</b> · a = {curr['scale_factor']:.3f} · t = {time_label}<br>"
         f"Linear Growth D(z) = {curr['growth_factor']:.3f}"
     )
     fig.add_annotation(
@@ -521,7 +660,12 @@ def evolution_frame_summary_table(frames: list[dict[str, Any]]) -> list[dict[str
                 "Frame": f["frame_index"],
                 "Redshift z": f"{f['redshift']:.2f}",
                 "Scale factor a": f"{f['scale_factor']:.3f}",
-                "Cosmic Age [Gyr]": f"{f['cosmic_time_gyr']:.3f}",
+                "Cosmic Age [Gyr]": (
+                    f"{float(f['cosmic_time_gyr']):.3f}"
+                    if f.get("cosmic_time_gyr") is not None
+                    else "Unavailable"
+                ),
+                "Cosmic time source": f.get("cosmic_time_source", "Not recorded"),
                 "Growth D(z)": f"{f['growth_factor']:.3f}",
                 "Nonlinear Scale knl [Mpc⁻¹]": f"{f['knl']:.3f}"
                 if f["knl"]

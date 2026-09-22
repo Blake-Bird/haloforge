@@ -12,7 +12,9 @@ from content.lab_sections import (
     student_section_bundle,
 )
 from content.modules import (
+    GUIDED_EXPERIMENT_BY_MODULE,
     MODULES,
+    guided_experiment_for_module,
     get_module,
     instructor_guide,
     lecture_outline,
@@ -47,6 +49,13 @@ def test_every_module_has_reusable_student_and_instructor_materials():
 
 def test_module_lookup_is_explicit():
     assert get_module("ede-structure").duration_minutes == 50
+
+
+def test_every_prepared_module_has_a_matching_live_guided_experiment():
+    assert set(GUIDED_EXPERIMENT_BY_MODULE) == {module.identifier for module in MODULES}
+    assert {
+        guided_experiment_for_module(module) for module in MODULES
+    } <= {"Early expansion", "More small-scale power", "Why kmax matters"}
 
 
 def test_teach_this_tomorrow_bundle_is_complete_and_local_only():

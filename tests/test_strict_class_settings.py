@@ -30,6 +30,13 @@ def test_lcdm_does_not_leak_scalar_field_settings():
     assert "fraction_axion_ac" not in settings
 
 
+def test_massless_radiation_control_maps_only_to_class_n_ur():
+    params = dict(DEFAULT_PARAMS, N_eff=3.37)
+    settings = build_class_settings(params)
+    assert settings["N_ur"] == pytest.approx(3.37)
+    assert "N_eff" not in settings
+
+
 def test_zero_ede_is_exactly_the_lcdm_settings_limit():
     zero = dict(DEFAULT_PARAMS, enable_ede=True, f_EDE=0.0)
     lcdm = dict(DEFAULT_PARAMS, enable_ede=False)
@@ -90,6 +97,7 @@ def test_compute_samples_each_redshift_from_class(monkeypatch):
             return {
                 "z": np.array([0.0, 1.0, 2.0, 3.0]),
                 "H [1/Mpc]": np.array([1.0, 2.0, 3.0, 4.0]),
+                "proper time [Gyr]": np.array([13.8, 5.9, 3.3, 2.1]),
             }
 
         def struct_cleanup(self):
@@ -114,6 +122,9 @@ def test_compute_samples_each_redshift_from_class(monkeypatch):
     np.testing.assert_allclose(result["growth_class"], [1.0, 1.0 / 3.0])
     np.testing.assert_allclose(
         result["background_omega_m_by_z"], [0.309, 0.309 * 27 / 9]
+    )
+    np.testing.assert_allclose(
+        result["background_cosmic_time_gyr_by_z"], [13.8, 3.3]
     )
 
 
@@ -154,6 +165,7 @@ def test_missing_class_background_does_not_erase_valid_power_result(monkeypatch)
 def test_worker_retries_only_after_transient_crash(monkeypatch):
     """A killed worker gets one clean retry and records the execution policy."""
     monkeypatch.delitem(sys.modules, "classy", raising=False)
+    monkeypatch.setattr("engine.class_runner._RESOLVED_CLASS_PYTHON", sys.executable)
     monkeypatch.setenv("HALOFORGE_CLASS_TRANSIENT_RETRIES", "1")
     calls = []
 
@@ -189,6 +201,7 @@ def test_worker_retries_only_after_transient_crash(monkeypatch):
 
 def test_worker_reported_class_error_is_not_retried(monkeypatch):
     monkeypatch.delitem(sys.modules, "classy", raising=False)
+    monkeypatch.setattr("engine.class_runner._RESOLVED_CLASS_PYTHON", sys.executable)
     monkeypatch.setenv("HALOFORGE_CLASS_TRANSIENT_RETRIES", "3")
     calls = []
 

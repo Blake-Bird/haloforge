@@ -226,6 +226,9 @@ def test_generate_run_exports_and_reload_arrays(tmp_path, monkeypatch):
     assert (export_dir / "Run_001_—_Baseline_LCDM_exports.zip").exists()
     manifest = json.loads((export_dir / "manifest.json").read_text())
     assert "params.json" in manifest["files"]
+    assert "solver_execution.json" in manifest["files"]
+    assert "solver_stdout.txt" in manifest["files"]
+    assert "solver_stderr.txt" in manifest["files"]
     citations = json.loads((export_dir / "citation_metadata.json").read_text())
     assert "matter_power.pdf" in citations["figures"]
     assert (
@@ -258,6 +261,9 @@ def test_generate_run_exports_and_reload_arrays(tmp_path, monkeypatch):
     assert hmf_table["table_context"]["mass_definition"] == "analytic_top_hat"
     with ZipFile(export_dir / "Run_001_—_Baseline_LCDM_exports.zip") as archive:
         assert "manifest.json" in archive.namelist()
+        assert "solver_execution.json" in archive.namelist()
+        assert "solver_stdout.txt" in archive.namelist()
+        assert "solver_stderr.txt" in archive.namelist()
         assert "README.md" in archive.namelist()
         assert "share_card.md" in archive.namelist()
         assert "notebook.json" in archive.namelist()

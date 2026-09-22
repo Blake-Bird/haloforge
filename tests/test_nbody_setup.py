@@ -35,6 +35,10 @@ def test_box_resolution_validates_inputs():
         compute_box_resolution(box_size_mpc_h=-10.0, particles_per_dim=64)
     with pytest.raises(ValueError, match="Particles per dimension"):
         compute_box_resolution(box_size_mpc_h=100.0, particles_per_dim=8)
+    with pytest.raises(ValueError, match="collisionless DM-only"):
+        compute_box_resolution(
+            box_size_mpc_h=100.0, particles_per_dim=64, is_hydro=True
+        )
 
 
 def test_validate_hmf_mass_range_for_box_categorizes_correctly():

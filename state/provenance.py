@@ -74,6 +74,33 @@ def _package_versions() -> dict[str, str]:
     return result
 
 
+def solver_binding_provenance(solver_execution: dict | None = None) -> dict:
+    """Record the exact locally observed Python/binding identity when available."""
+    execution = solver_execution or {}
+    worker_python = str(execution.get("worker_python", sys.executable))
+    binding_path = str(execution.get("classy_path", ""))
+    if not binding_path:
+        try:
+            import classy  # type: ignore
+
+            binding_path = str(getattr(classy, "__file__", ""))
+        except Exception:
+            binding_path = ""
+    path = Path(binding_path) if binding_path else None
+    return {
+        "worker_python": worker_python,
+        "worker_python_sha256": (
+            file_sha256(Path(worker_python))
+            if Path(worker_python).is_file()
+            else "unavailable"
+        ),
+        "classy_binding_path": binding_path or "unavailable",
+        "classy_binding_sha256": (
+            file_sha256(path) if path and path.is_file() else "unavailable"
+        ),
+    }
+
+
 def source_tree_sha256(root: Path = PROJECT_ROOT) -> str:
     """Identify shipped source, including local edits and builds without Git.
 
@@ -147,8 +174,11 @@ def reproducibility_hash(params: dict, class_settings: dict, provenance: dict) -
     return _sha256_bytes(encoded)
 
 
-def run_provenance(params: dict, class_settings: dict) -> dict:
+def run_provenance(
+    params: dict, class_settings: dict, solver_execution: dict | None = None
+) -> dict:
     provenance = software_provenance()
+    provenance["solver_binding"] = solver_binding_provenance(solver_execution)
     provenance["created_at"] = datetime.now(timezone.utc).isoformat()
     provenance["reproducibility_hash"] = reproducibility_hash(
         params, class_settings, provenance
