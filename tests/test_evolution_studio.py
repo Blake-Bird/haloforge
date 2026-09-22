@@ -12,6 +12,8 @@ from engine.evolution_studio import (
     evolution_frame_summary_table,
     cosmic_time_gyr,
 )
+from engine.hmf import cumulative_hmf, hmf_from_sigma
+from engine.sigma import sigma_grid
 
 
 @pytest.fixture
@@ -39,6 +41,48 @@ def test_calculate_evolution_frames(sample_power):
     assert frames[0]["growth_factor"] < frames[-1]["growth_factor"]
     # Mass variance at fixed mass should grow with time
     assert frames[0]["sigma"][50] < frames[-1]["sigma"][50]
+
+
+def test_evolution_hmf_matches_core_and_has_zero_finite_endpoint(sample_power):
+    k, p0 = sample_power
+    frame = calculate_evolution_frames(
+        k,
+        p0,
+        np.array([0.0]),
+        None,
+        DEFAULT_PARAMS,
+        fitting="Sheth-Tormen 2001",
+    )[0]
+    masses = np.asarray(frame["M"])
+    sigma = sigma_grid(masses, k, p0, DEFAULT_PARAMS, "Top-hat")
+    expected = hmf_from_sigma(
+        masses,
+        sigma["sigma"],
+        sigma["rho0"],
+        DEFAULT_PARAMS["H0"] / 100,
+        "Sheth-Tormen 2001",
+        DEFAULT_PARAMS["delta_c"],
+        mass_definition="analytic_top_hat",
+    )
+    np.testing.assert_allclose(frame["sigma"], sigma["sigma"])
+    np.testing.assert_allclose(frame["hmf_diff"], expected)
+    np.testing.assert_allclose(
+        frame["hmf_cum"], cumulative_hmf(np.asarray(frame["M_h"]), expected)
+    )
+    assert frame["hmf_cum"][-1] == 0.0
+
+
+def test_ede_watson_evolution_requires_solver_matter_background(sample_power):
+    k, p0 = sample_power
+    with pytest.raises(ValueError, match="AxiCLASS background"):
+        calculate_evolution_frames(
+            k,
+            p0,
+            np.array([1.0, 0.0]),
+            None,
+            dict(DEFAULT_PARAMS, enable_ede=True),
+            fitting="Watson SO 2013",
+        )
 
 
 def test_evolution_uses_stored_multi_redshift_power(sample_power):

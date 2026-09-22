@@ -35,7 +35,7 @@ FIT_CONTRACTS = {
         "analytic", "analytic_top_hat", citation="Press & Schechter 1974"
     ),
     "Sheth-Tormen 2001": FitContract(
-        "analytic", "analytic_top_hat", citation="Sheth & Tormen 2001"
+        "semi-empirical", "analytic_top_hat", citation="Sheth, Mo & Tormen 2001"
     ),
     "Jenkins 2001": FitContract(
         "empirical", "fof_b0.2", (0, 5), (-1.2, 1.05), citation="Jenkins et al. 2001"
@@ -146,6 +146,11 @@ def validity_report(
         raise ValueError("sigma must be finite and strictly positive")
     valid = np.ones(sigma.shape, dtype=bool)
     reasons: list[str] = []
+    if contract.family == "semi-empirical":
+        valid[...] = False
+        reasons.append(
+            "Simulation-fitted coefficients have no verified halo-finder mass definition or calibration domain in this contract."
+        )
     if contract.redshift_range is not None:
         lo, hi = contract.redshift_range
         if not lo <= float(z) <= hi:
@@ -173,6 +178,12 @@ def validity_report(
         "mass_definition": mass_definition,
         "citation": contract.citation,
         "calibrated_mask": valid,
-        "status": "calibrated" if np.all(valid) else "outside_calibration",
+        "status": (
+            "unverified_calibration"
+            if contract.family == "semi-empirical"
+            else "calibrated"
+            if np.all(valid)
+            else "outside_calibration"
+        ),
         "reasons": reasons,
     }

@@ -36,6 +36,21 @@ class ICVerificationReport:
     summary: str
 
 
+def class_spectrum_in_box_units(
+    k_mpc_inverse: np.ndarray, p_mpc_cubed: np.ndarray, h: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert CLASS physical units to the (Mpc/h) box FFT convention.
+
+    A box mode k_h represents physical k=h*k_h; its power in box-volume
+    units is P_h(k_h)=h**3 P_physical(h*k_h).
+    """
+    if not np.isfinite(h) or h <= 0:
+        raise ValueError("H0 must define a finite positive h for IC generation")
+    return np.asarray(k_mpc_inverse, dtype=float) / h, np.asarray(
+        p_mpc_cubed, dtype=float
+    ) * h**3
+
+
 def generate_gaussian_random_field(
     grid_size: int,
     box_size_mpc_h: float,
@@ -78,7 +93,9 @@ def generate_gaussian_random_field(
         or np.any(p_eval <= 0)
         or np.any(np.diff(k_eval) <= 0)
     ):
-        raise ValueError("IC power spectrum must be finite, positive, and strictly increasing")
+        raise ValueError(
+            "IC power spectrum must be finite, positive, and strictly increasing"
+        )
     k_fundamental = 2.0 * np.pi / l_box
     k_nyquist = np.pi * n / l_box
     if k_eval[0] > k_fundamental or k_eval[-1] < k_nyquist:
@@ -167,7 +184,7 @@ def generate_zeldovich_particles(
     l_box = box_size_mpc_h
     a_start = 1.0 / (1.0 + float(start_redshift))
     h = float(params.get("H0", 67.36)) / 100.0
-    _ = h  # Keep parameter extracted for clarity
+    k_box, p_box = class_spectrum_in_box_units(k_power, p_power, h)
 
     if spectrum_redshift is not None and not np.isclose(
         float(spectrum_redshift), float(start_redshift), rtol=0.0, atol=1e-10
@@ -202,8 +219,8 @@ def generate_zeldovich_particles(
     delta_k = generate_gaussian_random_field(
         n,
         l_box,
-        k_power,
-        p_power,
+        k_box,
+        p_box,
         seed=seed,
         paired_fixed=paired_fixed,
         pair_index=pair_index,
@@ -251,9 +268,9 @@ def generate_zeldovich_particles(
     measured_k, measured_power = measure_realized_power_spectrum(
         delta_k * d_start, l_box, n
     )
-    expected_power = np.exp(
-        np.interp(np.log(measured_k), np.log(k_power), np.log(p_power))
-    ) * d_start**2
+    expected_power = (
+        np.exp(np.interp(np.log(measured_k), np.log(k_box), np.log(p_box))) * d_start**2
+    )
     fractional_errors = np.abs(measured_power / expected_power - 1.0)
     median_power_error = float(np.median(fractional_errors))
     # A fixed-amplitude realization should agree shell-by-shell to numerical
@@ -333,12 +350,14 @@ def generate_2lpt_particles(
 
     n = int(particles_per_dim)
     l_box = float(box_size_mpc_h)
+    h = float(params.get("H0", 67.36)) / 100.0
+    k_box, p_box = class_spectrum_in_box_units(k_power, p_power, h)
     a_start = 1.0 / (1.0 + float(start_redshift))
     delta_k = generate_gaussian_random_field(
         n,
         l_box,
-        k_power,
-        p_power,
+        k_box,
+        p_box,
         seed=seed,
         paired_fixed=paired_fixed,
         pair_index=pair_index,
@@ -398,7 +417,11 @@ def generate_2lpt_particles(
     omega_m_z = omega_m0 * (1.0 + start_redshift) ** 3 / ez2
     f1 = float(growth_rate) if growth_rate is not None else omega_m_z**0.55
     e_rate = float(expansion_rate_E) if expansion_rate_E is not None else np.sqrt(ez2)
-    f2 = float(second_order_growth_rate) if second_order_growth_rate is not None else 2.0 * f1
+    f2 = (
+        float(second_order_growth_rate)
+        if second_order_growth_rate is not None
+        else 2.0 * f1
+    )
     if any(not np.isfinite(value) or value <= 0 for value in (f1, f2, e_rate)):
         raise ValueError("2LPT growth and expansion inputs must be finite and positive")
     velocities = a_start * 100.0 * e_rate * (f1 * psi1_scaled + f2 * psi2_scaled)
@@ -410,9 +433,9 @@ def generate_2lpt_particles(
     measured_k, measured_power = measure_realized_power_spectrum(
         delta_k * d_start, l_box, n
     )
-    expected_power = np.exp(
-        np.interp(np.log(measured_k), np.log(k_power), np.log(p_power))
-    ) * d_start**2
+    expected_power = (
+        np.exp(np.interp(np.log(measured_k), np.log(k_box), np.log(p_box))) * d_start**2
+    )
     median_power_error = float(np.median(np.abs(measured_power / expected_power - 1.0)))
     power_ok = bool(median_power_error <= (0.05 if paired_fixed else 0.50))
     report = ICVerificationReport(
@@ -425,7 +448,9 @@ def generate_2lpt_particles(
         linear_power_agreement_passed=power_ok,
         power_agreement_median_fractional_error=median_power_error,
         power_agreement_bin_count=int(measured_k.size),
-        spectrum_redshift=float(spectrum_redshift) if spectrum_redshift is not None else None,
+        spectrum_redshift=float(spectrum_redshift)
+        if spectrum_redshift is not None
+        else None,
         lpt_order=2,
         max_second_order_displacement_mpc_h=max_psi2,
         checks_passed=periodicity_ok and v_cm < 1.0 and power_ok,
@@ -469,9 +494,7 @@ def export_gadget_hdf5_ic(
     omega_m = float(params.get("Omega_m", 0.315))
     omega_l = 1.0 - omega_m - float(params.get("Omega_k", 0.0))
 
-    res = compute_box_resolution(
-        box_size_mpc_h, particles_per_dim, params
-    )
+    res = compute_box_resolution(box_size_mpc_h, particles_per_dim, params)
 
     with h5py.File(path, "w") as f:
         # Header group
@@ -504,8 +527,8 @@ def export_gadget_hdf5_ic(
         pt1 = f.create_group("PartType1")
         # Positions in the Mpc/h internal length unit declared in param.txt.
         pt1.create_dataset("Coordinates", data=positions.astype(np.float32))
-        # Velocities in km/s * sqrt(a)
-        v_gadget = (velocities * np.sqrt(hdr.attrs["Time"])).astype(np.float32)
+        # GADGET stores u=v_pec/sqrt(a), with v_pec in physical km/s.
+        v_gadget = (velocities / np.sqrt(hdr.attrs["Time"])).astype(np.float32)
         pt1.create_dataset("Velocities", data=v_gadget)
         pt1.create_dataset("ParticleIDs", data=ids.astype(np.uint64))
 

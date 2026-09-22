@@ -8,6 +8,7 @@ invent a generic EDE background-file interface for upstream GADGET-4.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 import platform
 import shutil
@@ -19,8 +20,8 @@ from typing import Any
 import numpy as np
 
 
-GADGET4_VERSION = "GADGET-4 (release v4.0)"
-GADGET4_PINNED_COMMIT = "03f905eb1499dc845344421b44ecddb2024bc6c0"
+GADGET4_VERSION = "GADGET-4 (pinned upstream commit)"
+GADGET4_PINNED_COMMIT = "6fb393b5e25907f2ff06211f67d341c5e40e90d1"
 # A production image must be supplied as an immutable digest, e.g.
 # ``registry.example/haloforge-gadget4@sha256:<digest>``.  A Docker daemon or
 # an image tag alone is not reproducibility evidence.
@@ -37,11 +38,56 @@ GADGET4_OUTPUT_LIST_REFERENCE = (
 )
 
 
+def validate_bundled_acceptance() -> tuple[bool, str]:
+    """Verify image-owned executable hashes and real smoke-run artifacts."""
+    evidence = Path("/opt/HALOFORGE_NBODY_ACCEPTANCE.json")
+    gadget = Path("/usr/local/bin/Gadget4")
+    rockstar = Path("/usr/local/bin/rockstar")
+    if not all(path.is_file() for path in (evidence, gadget, rockstar)):
+        return False, "Bundled executables or acceptance evidence are missing."
+
+    def digest(path: Path) -> str:
+        sha = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                sha.update(block)
+        return sha.hexdigest()
+
+    try:
+        report = json.loads(evidence.read_text())
+        if (
+            report.get("gadget_commit") != GADGET4_PINNED_COMMIT
+            or report.get("gadget_binary_sha256") != digest(gadget)
+            or report.get("rockstar_binary_sha256") != digest(rockstar)
+            or report.get("fixture_kind") != "synthetic-power-software-smoke-not-science-validation"
+        ):
+            raise ValueError("Bundled binary identity or fixture scope differs")
+        root = Path(report["run"]).resolve()
+        if not root.is_relative_to(Path("/opt/haloforge-acceptance").resolve()):
+            raise ValueError("Acceptance run is outside its image-owned directory")
+        run = json.loads((root / "run.json").read_text())
+        if run.get("state") != "completed" or len(run.get("snapshots", [])) != 3:
+            raise ValueError("Acceptance simulation is incomplete")
+        for item in run["snapshots"]:
+            if digest(Path(item["path"])) != item["sha256"]:
+                raise ValueError("Acceptance snapshot bytes changed")
+            if digest(Path(item["catalogue_path"])) != item["catalogue_sha256"]:
+                raise ValueError("Acceptance FoF bytes changed")
+        if digest(root / "catalogues/rockstar_final/halos_0.0.ascii") != report["rockstar_catalogue_sha256"]:
+            raise ValueError("Acceptance Rockstar bytes changed")
+        if digest(root / "exports/structure.gif") != report["movie_sha256"]:
+            raise ValueError("Acceptance movie bytes changed")
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        return False, f"Bundled N-body acceptance could not be verified: {exc}"
+    return True, "Bundled GADGET-4, FoF/Subfind, Rockstar, and movie fixture verified."
+
+
 @dataclass(frozen=True)
 class InstallationDoctorReport:
     """Diagnostic scorecard assessing the local host environment for GADGET-4 execution."""
 
     docker_available: bool
+    docker_daemon_available: bool
     docker_version: str
     docker_arch: str
     immutable_image_configured: bool
@@ -101,6 +147,7 @@ def run_installation_doctor() -> InstallationDoctorReport:
     docker_ok = False
     docker_ver = "Not found"
     docker_arch = platform.machine()
+    docker_daemon_available = False
     docker_cmd = shutil.which("docker")
     if docker_cmd:
         try:
@@ -110,12 +157,20 @@ def run_installation_doctor() -> InstallationDoctorReport:
             if res.returncode == 0:
                 docker_ok = True
                 docker_ver = res.stdout.strip()
+                daemon = subprocess.run(
+                    ["docker", "info", "--format", "{{.ServerVersion}}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                docker_daemon_available = daemon.returncode == 0
         except Exception:
             pass
 
     immutable_image_configured = "@sha256:" in GADGET4_CONTAINER_IMAGE
     image_available = False
-    if docker_ok and immutable_image_configured:
+    if docker_daemon_available and immutable_image_configured:
         try:
             inspected = subprocess.run(
                 ["docker", "image", "inspect", GADGET4_CONTAINER_IMAGE],
@@ -128,9 +183,16 @@ def run_installation_doctor() -> InstallationDoctorReport:
         except Exception:
             pass
 
-    acceptance_path = os.environ.get("HALOFORGE_GADGET4_ACCEPTANCE_MANIFEST", "").strip()
-    acceptance_evidence, acceptance_error = validate_acceptance_manifest(
-        acceptance_path or None, GADGET4_CONTAINER_IMAGE
+    acceptance_path = os.environ.get(
+        "HALOFORGE_GADGET4_ACCEPTANCE_MANIFEST", ""
+    ).strip()
+    bundled = Path("/usr/local/bin/Gadget4").is_file()
+    acceptance_evidence, acceptance_error = (
+        validate_bundled_acceptance()
+        if bundled
+        else validate_acceptance_manifest(
+            acceptance_path or None, GADGET4_CONTAINER_IMAGE
+        )
     )
 
     # Check WSL2
@@ -158,20 +220,28 @@ def run_installation_doctor() -> InstallationDoctorReport:
     cpu_cores = os.cpu_count() or 1
     # Check RAM & Disk
     try:
-        import psutil
-
-        ram_gb = psutil.virtual_memory().total / (1024**3)
-        free_disk_gb = psutil.disk_usage(".").free / (1024**3)
-    except Exception:
-        ram_gb = 8.0
-        free_disk_gb = 50.0
+        ram_gb = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024**3)
+    except (ValueError, OSError, AttributeError):
+        ram_gb = 0.0
+    data_dir = Path(os.environ.get("HALOFORGE_DATA_DIR", "/var/lib/haloforge"))
+    free_disk_gb = shutil.disk_usage(data_dir if data_dir.exists() else ".").free / (1024**3)
+    writable_data_dir = data_dir.is_dir() and os.access(data_dir, os.W_OK)
 
     # Determine recommended runtime
     recs = []
-    if docker_ok and image_available:
+    if bundled and acceptance_evidence:
+        runtime = "Bundled GADGET-4 and Rockstar smoke fixture verified"
+    elif bundled:
+        runtime = "Bundled GADGET-4 is present, but its acceptance fixture failed"
+    elif docker_daemon_available and image_available:
         runtime = "Docker image present; GADGET-4 acceptance test still required"
-    elif docker_ok:
+    elif docker_daemon_available:
         runtime = "Docker available; immutable GADGET-4 image is not configured locally"
+    elif docker_ok:
+        runtime = "Docker command found, but its daemon is not running"
+        recs.append(
+            "Start the local Docker daemon before checking GADGET-4 images or executing a simulation."
+        )
     elif wsl2 and mpi_ok:
         runtime = "WSL2 MPI available; a verified GADGET-4 build is still required"
     elif mpi_ok:
@@ -181,19 +251,16 @@ def run_installation_doctor() -> InstallationDoctorReport:
         recs.append(
             "Configure an immutable, locally available GADGET-4 Docker image before simulation execution can be enabled."
         )
-    if docker_ok and not immutable_image_configured:
+    if not bundled and docker_ok and not immutable_image_configured:
         recs.append(
             "Set HALOFORGE_GADGET4_IMAGE to an immutable image reference containing @sha256:…; tags are not accepted as reproducible simulation evidence."
         )
-    if immutable_image_configured and not image_available:
+    if not bundled and immutable_image_configured and not image_available:
         recs.append(
             "The configured immutable GADGET-4 image is not available locally. Pull/build it explicitly and run the official acceptance case before enabling simulation execution."
         )
     if not acceptance_evidence:
-        recs.append(
-            "Record an official GADGET-4 acceptance case in a manifest matching the pinned image and source revision before enabling execution. "
-            + acceptance_error
-        )
+        recs.append(acceptance_error)
 
     if ram_gb < 8.0:
         recs.append(
@@ -201,23 +268,24 @@ def run_installation_doctor() -> InstallationDoctorReport:
         )
     if free_disk_gb < 20.0:
         recs.append(f"Only {free_disk_gb:.1f} GB disk free. Limit snapshot frequency.")
+    if bundled and not writable_data_dir:
+        recs.append("The local simulation data directory is not writable.")
 
     # An immutable image is only an execution prerequisite. The separate
     # manifest binds documented acceptance evidence to that exact build.
-    ready = (
-        docker_ok
-        and immutable_image_configured
-        and image_available
-        and acceptance_evidence
+    ready = acceptance_evidence and (
+        (bundled and writable_data_dir and free_disk_gb >= 1)
+        or (docker_daemon_available and immutable_image_configured and image_available)
     )
 
     return InstallationDoctorReport(
         docker_available=docker_ok,
+        docker_daemon_available=docker_daemon_available,
         docker_version=docker_ver,
         docker_arch=docker_arch,
         immutable_image_configured=immutable_image_configured,
         image_available=image_available,
-        acceptance_manifest_configured=bool(acceptance_path),
+        acceptance_manifest_configured=bool(acceptance_path) or bundled,
         acceptance_evidence_present=acceptance_evidence,
         acceptance_evidence_error=acceptance_error,
         wsl2_detected=wsl2,
@@ -235,10 +303,10 @@ def run_installation_doctor() -> InstallationDoctorReport:
 def generate_config_sh(
     *,
     is_hydro: bool = False,
-    enable_2lpt: bool = True,
+    enable_2lpt: bool = False,
     enable_fof: bool = True,
     enable_subfind: bool = True,
-    pm_mesh: int = 128,
+    pm_mesh: int = 32,
 ) -> str:
     """Generate a validated GADGET-4 Config.sh compile-time header."""
     if is_hydro:
@@ -262,7 +330,10 @@ def generate_config_sh(
     ]
 
     if enable_2lpt:
-        lines.append("SECOND_ORDER_LPT_ICS")
+        raise ValueError(
+            "SECOND_ORDER_LPT_ICS requires specially constructed Jenkins ICs; "
+            "HaloForge currently writes 1LPT ICs and cannot enable this option."
+        )
 
     if enable_fof:
         # These are compile-time options in GADGET-4, not parameter-file

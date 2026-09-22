@@ -3,10 +3,20 @@ import pytest
 
 from engine.contracts import (
     MASS_DEFINITIONS,
+    fit_contract,
     validity_report,
     validate_fit_configuration,
 )
 from engine.hmf import hmf_from_sigma
+
+
+def test_sheth_tormen_does_not_claim_verified_simulation_calibration():
+    assert fit_contract("Sheth-Tormen 2001").family == "semi-empirical"
+    report = validity_report(
+        "Sheth-Tormen 2001", [0.5, 1.0], 0, "analytic_top_hat", 200
+    )
+    assert report["status"] == "unverified_calibration"
+    assert not report["calibrated_mask"].any()
 
 
 def test_each_fit_has_a_declared_supported_mass_definition():

@@ -175,7 +175,7 @@ This is a deliberately conservative acceptance ledger, not a feature inventory. 
 | R165 | Build a sequence of questions around a live experiment. | Open | Implementation and direct verification required |
 | R166 | See aggregate anonymous answer distributions. | Open | Implementation and direct verification required |
 | R167 | Identify where students are getting confused. | Open | Implementation and direct verification required |
-| R168 | Export grades only if explicitly desired. | Open | Implementation and direct verification required |
+| R168 | Students can export their saved lab data, answers, and notebook. | Implemented | Teaching Lab offers a local work bundle; verify from a saved run. |
 | R169 | Give every lesson estimated completion time. | Open | Implementation and direct verification required |
 | R170 | Offer lecture mode: large labels, projector-optimized layouts, keyboard controls, narrative slides. | Open | Implementation and direct verification required |
 | R171 | Provide prepared modules for introductory cosmology, computational physics, statistics, structure formation, and numerical methods. | Open | Implementation and direct verification required |

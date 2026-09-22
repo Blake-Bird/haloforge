@@ -57,7 +57,6 @@ div[data-testid="stExpander"]{border:1px solid #21343c!important;border-radius:0
 .lesson-card.compact{min-height:0;padding:1.1rem}.lesson-card.compact h3{font-size:25px}.lesson-card.compact p{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.75}
 [data-testid="stPlotlyChart"]{overflow:hidden}
 .js-plotly-plot .plotly .gtitle{font-weight:500!important}
-.js-plotly-plot .plotly .legendtext{font-size:12px!important}
 [data-baseweb="select"] span,[data-baseweb="tag"]{max-width:100%;overflow:hidden;text-overflow:ellipsis}
 [data-testid="stCaptionContainer"]{line-height:1.45;color:#91a4ac}
 [data-testid="stDataFrame"]{overflow:auto}

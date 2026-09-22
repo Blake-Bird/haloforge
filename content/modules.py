@@ -216,7 +216,7 @@ def instructor_guide(module: LabModule) -> str:
                 "Provide the accessible chart transcript and reduced-motion mode by default; let students submit a written prediction rather than requiring hover interaction.",
                 "",
                 "## Privacy",
-                "This local module does not create a classroom, collect student data, upload responses, or export grades.",
+                "Students keep their work locally and can export a saved run, data, and notebook from the Teaching Lab.",
             ]
         )
         + "\n"
@@ -224,11 +224,11 @@ def instructor_guide(module: LabModule) -> str:
 
 
 def assignment_brief(module: LabModule) -> str:
-    """A ready-to-distribute assignment that preserves the module's caveat."""
+    """A self-directed lab record that preserves the module's caveat."""
     return (
         "\n".join(
             [
-                f"# Assignment - {module.title}",
+                f"# Lab record - {module.title}",
                 "",
                 f"**Estimated time:** {module.duration_minutes} minutes",
                 "",
@@ -238,7 +238,7 @@ def assignment_brief(module: LabModule) -> str:
                 "## Before you run",
                 module.checkpoint,
                 "",
-                "## What to submit",
+                "## What to record",
                 "",
                 "1. Your prediction before calculation, including what is held fixed.",
                 "2. A comparison of the requested observables with units and a stated baseline.",
@@ -257,7 +257,7 @@ def assignment_brief(module: LabModule) -> str:
 
 
 def solution_guide(module: LabModule) -> str:
-    """Instructor-facing solution outline, explicitly not a grading system."""
+    """Instructor-facing discussion outline."""
     return (
         "\n".join(
             [
@@ -269,8 +269,8 @@ def solution_guide(module: LabModule) -> str:
                 "## Misconception to surface",
                 module.caution,
                 "",
-                "## Assessment boundary",
-                "This local guide contains no student data, answer collection, automatic grading, or hidden remote solution. Use it as a discussion and feedback aid, not evidence of learning outcomes.",
+                "## Discussion guide",
+                "Use this outline to discuss the evidence and limitations after students complete their own investigations.",
             ]
         )
         + "\n"
@@ -320,7 +320,7 @@ def lecture_slides(module: LabModule) -> tuple[LectureSlide, ...]:
             "06 · LAB",
             "Students now run the prepared local investigation and record a conclusion plus caveat.",
             "Route to the student handout, the reproducible notebook, or a live comparison.",
-            "The local bundle contains no accounts, answer collection, surveillance, or automatic grades.",
+            "Students keep their own runs and can export the data and notebook when finished.",
         ),
     )
 
@@ -357,12 +357,12 @@ def teaching_bundle(module: LabModule) -> bytes:
             [
                 f"# Teach this tomorrow - {module.title}",
                 "",
-                "This local package contains ready-to-share course materials for one HaloForge module. It does not create a classroom, track students, upload responses, or export grades.",
+                "This local package contains materials for one HaloForge module. Students run the lab themselves and can export their saved data and notebook.",
                 "",
                 "## Contents",
                 "",
                 "- `student_handout.md`: investigation context and scientific caution.",
-                "- `assignment.md`: concise submission brief.",
+                "- `assignment.md`: self-directed lab record prompts.",
                 "- `instructor_guide.md`: teaching move, solution outline, accessibility, and privacy guidance.",
                 "- `solution_guide.md`: discussion-oriented expected reasoning.",
                 "- `lecture_outline.md`: six-step projector narrative with prompts and speaker notes.",
@@ -371,7 +371,7 @@ def teaching_bundle(module: LabModule) -> bytes:
                 "- `accessibility.md`: delivery accommodations and non-surveillance guidance.",
                 "- `manifest.json`: checksums for every included artifact.",
                 "",
-                "Export a HaloForge run first, place this notebook beside its exported Parquet tables, and make caveats part of the lesson rather than fine print.",
+                "After saving a lab run, open Teaching Lab → Export your work to download its data, answers, and analysis notebook. Keep caveats alongside the conclusion.",
             ]
         )
         + "\n",
@@ -405,7 +405,7 @@ def teaching_bundle(module: LabModule) -> bytes:
             "title": module.title,
             "duration_minutes": module.duration_minutes,
         },
-        "privacy_scope": "Local materials only; no classroom accounts, answer collection, analytics, or grade export.",
+        "privacy_scope": "Local materials and student-controlled exports.",
         "files": {
             name: {
                 "sha256": sha256(content.encode("utf-8")).hexdigest(),

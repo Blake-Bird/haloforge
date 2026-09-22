@@ -50,16 +50,14 @@ def test_acceptance_manifest_requires_matching_runtime_and_complete_evidence(tmp
 
 
 def test_generate_config_sh_includes_pinned_revision_and_flags():
-    config_dm = generate_config_sh(
-        is_hydro=False, enable_2lpt=True, enable_fof=True, enable_subfind=True
-    )
+    config_dm = generate_config_sh(is_hydro=False, enable_fof=True, enable_subfind=True)
     assert GADGET4_PINNED_COMMIT in config_dm
     assert "PERIODIC" in config_dm
     assert "NSOFTCLASSES=1" in config_dm
     assert "NTYPES=2" in config_dm
     assert "POWERSPEC_ON_OUTPUT" in config_dm
     assert "POWERSPEC_ON_THE_FLY" not in config_dm
-    assert "SECOND_ORDER_LPT_ICS" in config_dm
+    assert "SECOND_ORDER_LPT_ICS" not in config_dm
     assert "FOF" in config_dm
     assert "FOF_PRIMARY_LINK_TYPES=2" in config_dm
     assert "FOF_SECONDARY_LINK_TYPES=0" in config_dm
@@ -70,7 +68,9 @@ def test_generate_config_sh_includes_pinned_revision_and_flags():
     assert "COOLING" not in config_dm
 
     with pytest.raises(ValueError, match="collisionless DM-only"):
-        generate_config_sh(is_hydro=True, enable_2lpt=True)
+        generate_config_sh(is_hydro=True)
+    with pytest.raises(ValueError, match="specially constructed Jenkins ICs"):
+        generate_config_sh(enable_2lpt=True)
 
 
 def test_generate_gadget4_parameter_file():

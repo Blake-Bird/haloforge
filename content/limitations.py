@@ -60,7 +60,7 @@ LIMITATIONS = (
         "Privacy and collaboration",
         "high",
         "open",
-        "HaloForge intentionally has no authenticated hosted workspace, roles, sharing links, classroom roster, or gradebook.",
+        "HaloForge has no authenticated hosted workspace, roles, sharing links, or classroom roster.",
         "It cannot safely support multi-user research or classroom data sharing.",
         "Use local runs and explicit portable bundles only; do not deploy this build as an unauthenticated shared service.",
     ),

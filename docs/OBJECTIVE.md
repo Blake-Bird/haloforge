@@ -1,4 +1,8 @@
-treat these as checklist and u can not stop till all this is coded then checked reviewed in order and once everything is checked and u think perfect launch it and go through and make sure legit everything is perfected and note i know it says different phases and priotize no u r doing it all at once Even after every prior blocker is fixed, HaloForge still needs to become more than a good cosmology app. To feel genuinely category-defining, it needs to be:
+# Product objectives
+
+This document records proposed product directions. Scientific and release claims still require implementation evidence, tests, and external validation.
+
+HaloForge aims to be:
 
 - more trustworthy than a typical research prototype;
 - easier than a typical teaching tool;
@@ -297,7 +301,7 @@ For widespread classroom use, the professor workflow has to be absurdly good.
 - Build a sequence of questions around a live experiment.
 - See aggregate anonymous answer distributions.
 - Identify where students are getting confused.
-- Export grades only if explicitly desired.
+- Let students export their own data, answers, and notebooks after a lab.
 - Give every lesson estimated completion time.
 - Offer lecture mode: large labels, projector-optimized layouts, keyboard controls, narrative slides.
 - Provide prepared modules for introductory cosmology, computational physics, statistics, structure formation, and numerical methods.

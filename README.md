@@ -151,7 +151,7 @@ For a research result, additionally:
 - Standalone multiplicity plots label fixed n_eff or Ωₘ reference slices where needed. They are not substitutes for the run-dependent HMF calculation.
 - The [frozen CAMB reference](tests/reference/README.md) covers one flat ΛCDM cosmology. External EDE/HMF validation and comprehensive accessibility review remain outstanding.
 
-See [known limitations](docs/KNOWN-LIMITATIONS.md), [implementation status](docs/IMPLEMENTATION-STATUS.md), and [release policy](docs/RELEASE-POLICY.md).
+See [known limitations](docs/KNOWN-LIMITATIONS.md), [implementation status](docs/IMPLEMENTATION-STATUS.md), the [download-to-working N-body checklist](docs/NBODY-PLATFORM-CHECKLIST.md), [master acceptance checklist](docs/MASTER-ACCEPTANCE-CHECKLIST.md), and [release policy](docs/RELEASE-POLICY.md).
 
 ## References
 

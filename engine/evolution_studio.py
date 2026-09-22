@@ -14,10 +14,11 @@ from typing import Any
 import numpy as np
 import plotly.graph_objects as go
 
-from engine.fitting_functions import fitting_values
+from engine.hmf import cumulative_hmf, hmf_from_sigma
+from engine.contracts import fit_contract
+from engine.cosmology import omega_radiation
 from engine.scientific_status import APPROXIMATION, CALCULATED_LINEAR_THEORY
-from engine.sigma import dlog_sigma_dlog_M
-from engine.windows import window_squared
+from engine.sigma import sigma_grid
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ def calculate_evolution_frames(
     power_by_z: np.ndarray | None = None,
     source_redshifts: np.ndarray | None = None,
     cosmic_time_gyr_by_z: np.ndarray | None = None,
+    background_omega_m_by_z: np.ndarray | None = None,
     mass_min_exp: float = 8.0,
     mass_max_exp: float = 16.0,
     mass_points: int = 100,
@@ -92,9 +94,31 @@ def calculate_evolution_frames(
     if k.ndim != 1 or p0.shape != k.shape or np.any(k <= 0) or np.any(p0 <= 0):
         raise ValueError("Evolution requires matching positive k and P(k) arrays")
     if zs.ndim != 1 or zs.size == 0 or np.any(~np.isfinite(zs)) or np.any(zs < 0):
-        raise ValueError("Evolution redshifts must be a nonempty finite nonnegative array")
+        raise ValueError(
+            "Evolution redshifts must be a nonempty finite nonnegative array"
+        )
 
     solver_cosmic_time: np.ndarray | None = None
+    solver_omega_m: np.ndarray | None = None
+    if background_omega_m_by_z is not None:
+        candidate_omega_m = np.asarray(background_omega_m_by_z, dtype=float)
+        if (
+            candidate_omega_m.shape != zs.shape
+            or np.any(~np.isfinite(candidate_omega_m))
+            or np.any(candidate_omega_m <= 0)
+        ):
+            raise ValueError(
+                "Solver Ωm(z) must be finite, positive, and match the evolution grid"
+            )
+        solver_omega_m = candidate_omega_m
+    if (
+        params.get("enable_ede")
+        and fitting == "Watson SO 2013"
+        and solver_omega_m is None
+    ):
+        raise ValueError(
+            "EDE Watson SO evolution requires Ωm(z) from the AxiCLASS background"
+        )
     if cosmic_time_gyr_by_z is not None:
         candidate_time = np.asarray(cosmic_time_gyr_by_z, dtype=float)
         if (
@@ -115,7 +139,9 @@ def calculate_evolution_frames(
     validation_summary: tuple[float, float] | None = None
     if power_by_z is not None or source_redshifts is not None:
         if power_by_z is None or source_redshifts is None:
-            raise ValueError("power_by_z and source_redshifts must be supplied together")
+            raise ValueError(
+                "power_by_z and source_redshifts must be supplied together"
+            )
         source_z = np.asarray(source_redshifts, dtype=float)
         source_power = np.asarray(power_by_z, dtype=float)
         if (
@@ -132,7 +158,9 @@ def calculate_evolution_frames(
         source_z, source_power = source_z[order], source_power[order]
         if np.any(np.diff(source_z) <= 0):
             raise ValueError("Stored redshifts must be strictly distinct")
-        if float(zs.min()) < float(source_z.min()) or float(zs.max()) > float(source_z.max()):
+        if float(zs.min()) < float(source_z.min()) or float(zs.max()) > float(
+            source_z.max()
+        ):
             raise ValueError(
                 "Requested evolution frames fall outside the calculated CLASS/AxiCLASS redshift grid; extrapolation is not permitted."
             )
@@ -175,12 +203,11 @@ def calculate_evolution_frames(
                 for i in range(zs.size)
             ]
         )
-        interpolation_source = "log P–log a interpolation of stored CLASS/AxiCLASS spectra"
+        interpolation_source = (
+            "log P–log a interpolation of stored CLASS/AxiCLASS spectra"
+        )
     h = float(params.get("H0", 67.36)) / 100.0
     omega_m0 = float(params.get("Omega_m", 0.315))
-    rho_crit_0 = 2.775e11 * (h**2)  # Msun / Mpc^3
-    rho0 = omega_m0 * rho_crit_0
-
     # Mass coordinates
     M_h = np.logspace(mass_min_exp, mass_max_exp, mass_points)
     M = M_h / h
@@ -231,11 +258,7 @@ def calculate_evolution_frames(
             else np.asarray([], dtype=int)
         )
         exact_spectrum = matching_source.size > 0
-        frame_status = (
-            CALCULATED_LINEAR_THEORY
-            if exact_spectrum
-            else APPROXIMATION
-        )
+        frame_status = CALCULATED_LINEAR_THEORY if exact_spectrum else APPROXIMATION
         frame_power_source = (
             "exact stored CLASS/AxiCLASS spectrum"
             if exact_spectrum
@@ -249,41 +272,37 @@ def calculate_evolution_frames(
         delta2 = (k**3) * p_z / (2.0 * (np.pi**2))
         knl = nonlinear_scale_knl(k, delta2)
 
-        # Compute sigma(M, z)
-        # Using top-hat smoothing:
-        R = (3.0 * M / (4.0 * np.pi * rho0)) ** (1.0 / 3.0)
-        sigmas = []
-        for r_val in R:
-            # sigma^2 = integral dk / (2 pi^2) k^2 P(k,z) W^2(kR)
-            integrand = (
-                (k**2) * p_z * window_squared(k * r_val, "Top-hat") / (2.0 * np.pi**2)
+        sigma_result = sigma_grid(M, k, p_z, params, "Top-hat")
+        sigmas = sigma_result["sigma"]
+        dlnsigma = sigma_result["dlnsigma_dlnM"]
+        if solver_omega_m is not None:
+            omega_m_z = float(solver_omega_m[idx])
+        elif params.get("enable_ede"):
+            # Other fits do not use Ωm(z); Watson SO is rejected above.
+            omega_m_z = omega_m0
+        else:
+            omega_r0 = float(params.get("Omega_r", omega_radiation(params)))
+            omega_k0 = float(params.get("Omega_k", 0.0))
+            ez2 = (
+                omega_r0 * (1.0 + z_val) ** 4
+                + omega_m0 * (1.0 + z_val) ** 3
+                + omega_k0 * (1.0 + z_val) ** 2
+                + (1.0 - omega_r0 - omega_m0 - omega_k0)
             )
-            var = np.trapezoid(integrand, k)
-            sigmas.append(np.sqrt(max(var, 1e-30)))
-        sigmas = np.asarray(sigmas, dtype=float)
-        dlnsigma = dlog_sigma_dlog_M(M, sigmas)
-
-        # HMF: dn / dln M
-        delta_c = float(params.get("delta_c", 1.686))
-        ez2 = omega_m0 * (1.0 + z_val) ** 3 + (1.0 - omega_m0)
-        omega_m_z = omega_m0 * (1.0 + z_val) ** 3 / ez2
-        f_mult = fitting_values(
+            omega_m_z = omega_m0 * (1.0 + z_val) ** 3 / ez2
+        hmf_diff = hmf_from_sigma(
+            M,
             sigmas,
-            delta_c,
+            sigma_result["rho0"],
+            h,
             fitting,
+            float(params.get("delta_c", 1.686)),
             z=float(z_val),
-            omega_m_z=float(omega_m_z),
-            delta_halo=200.0,
-            neff=-6.0 * dlnsigma - 3.0,
+            omega_m_z=omega_m_z,
+            delta_halo=float(params.get("delta_halo", 200.0)),
+            mass_definition=fit_contract(fitting).mass_definition,
         )
-        hmf_diff = (rho0 / M) * f_mult * np.abs(dlnsigma) / (h**3)
-
-        # Cumulative HMF: n(>M) = integral_M^Mmax (dn/dln M') dln M'
-        log_M = np.log(M)
-        cum_hmf = np.zeros_like(hmf_diff)
-        for m_i in range(len(M) - 1):
-            cum_hmf[m_i] = np.trapezoid(hmf_diff[m_i:], log_M[m_i:])
-        cum_hmf[-1] = hmf_diff[-1] * 0.01
+        cum_hmf = cumulative_hmf(M_h, hmf_diff)
 
         # Milestones
         milestones = []
@@ -300,9 +319,9 @@ def calculate_evolution_frames(
         if knl is not None:
             milestones.append(
                 EvolutionMilestone(
-                    name="Nonlinear Scale Entry",
+                    name="Approximate nonlinear scale",
                     redshift=float(z_val),
-                    description=f"Modes with k >= {knl:.3f} Mpc^-1 have collapsed into the non-linear regime (Delta^2 >= 1).",
+                    description=f"Linear Δ²(k) reaches approximately 1 near k={knl:.3f} Mpc^-1; linear theory is expected to become unreliable toward larger k.",
                     active_in_frame=True,
                 )
             )
@@ -321,6 +340,8 @@ def calculate_evolution_frames(
 
         frame_data = {
             "frame_index": idx,
+            "fitting": fitting,
+            "mass_definition": fit_contract(fitting).mass_definition,
             "redshift": float(z_val),
             "scale_factor": scale_factor,
             "cosmic_time_gyr": cosmic_time,
@@ -423,12 +444,12 @@ def build_evolution_figure(
                 hovertemplate="k=%{x:.3e} Mpc⁻¹<br>Δ²=%{y:.3e}<extra></extra>",
             )
         )
-        # Linear threshold line Delta^2 = 1
+        # Heuristic onset of nonlinear fluctuations, not a collapse threshold.
         fig.add_hline(
             y=1.0,
             line_dash="dot",
             line_color="#ff718b",
-            annotation_text="Linear collapse threshold (Δ² = 1)",
+            annotation_text="Approximate nonlinear scale (linear Δ² ≈ 1)",
             annotation_position="top left",
         )
 

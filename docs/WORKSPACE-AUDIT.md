@@ -7,7 +7,7 @@ It is not a claim that a rendered control establishes scientific validity.
 
 ## Evidence used
 
-- Live local-app walkthrough: Explore, quick navigation, Dashboard, Graph
+- Live local-app walkthrough: Explore, Dashboard, Graph
   Studio, and Teaching Lab.
 - `tests/test_app_workspaces.py`: every Research workspace and both Compare
   workspaces render against synthetic, integrity-checked saved science.
@@ -31,7 +31,7 @@ It is not a claim that a rendered control establishes scientific validity.
 | Evolution Studio | Multi-redshift linear spectra, scrubber, contact sheet, frame table, and video export. | Rendered with saved data. It is linear-theory evolution, not nonlinear structure evolution. |
 | Campaign Lab | LHS/Sobol/grid campaign definition, durable member states, bounded batches, and response views. | UI and orchestration are tested. Actual members need the configured CLASS/AxiCLASS environment. |
 | Simulation Lab | Hardware diagnostics, periodic-box planning, IC generation, snapshot/catalogue import, FOF and HMF comparison. | Planning and analysis are implemented; a real GADGET-4 execution path requires its validated external image and acceptance evidence. |
-| Teaching Lab | Five modules, live question, lecture, student/instructor materials, local sections, notebooks, and skepticism exercises. | Materials and bundles are tested. It is local teaching support, not a hosted classroom, LMS, or gradebook. |
+| Teaching Lab | Five modules, live question, lecture, student/instructor materials, local sections, notebooks, skepticism exercises, and student-controlled work export. | Students run their own lab and can download saved run data, notebook answers, provenance, and a reusable analysis notebook. |
 | Learn the Pipeline | Seven-step visual course: primordial conditions through halo abundance. | Works with a saved run; shows a truthful pre-run stop at the first uncalculated step. |
 | Notebook | Questions, predictions, annotations, links, attached artifacts, citations, and exports. | Rendered with saved data; collaboration remains intentionally out of scope without auth/storage boundaries. |
 | Runs + Export | Load, rename, duplicate, baseline, trash recovery, import/export, and reproducibility bundles. | Rendered with saved data and integrity checks. Shared hosted storage is intentionally guarded. |
@@ -40,20 +40,16 @@ It is not a claim that a rendered control establishes scientific validity.
 
 ## Corrections made during this audit
 
-1. Search and navigation now begin with meaningful destinations rather than an
-   alphabetical dump.
-2. Quick-action navigation no longer produces a Streamlit state error or a
-   visible selector/page mismatch.
+1. The unused sidebar “Go to…” control was removed; the mode and workspace selectors remain the navigation controls.
+2. Internal teaching-to-experiment navigation keeps the selected mode and rendered page in sync.
 3. A fresh Research visit opens Dashboard instead of an empty recovery screen.
 4. Every prepared teaching module now opens its matching guided experiment,
    retaining the prediction-before-calculation workflow.
+5. Teaching Lab rendering and student export now live in `ui/teaching.py`, reducing the main app module while keeping calculations in `engine/`.
 
 ## Important gaps that should remain visible
 
-- The navigation tool is a keyboard-operable sidebar search, not yet a
-  system-wide Cmd/Ctrl-K palette.
-- Teaching does not collect work, track progress, or grade students. Adding
-  those needs authenticated, privacy-reviewed accounts and storage boundaries.
+- Student work is kept locally and exported by the student from a saved run.
 - GADGET-4 execution, Rockstar comparison, and production 2LPT are not ready
   to be represented as completed simulation workflows.
 - No rendered chart proves a fit is calibrated, an experiment converged, or a

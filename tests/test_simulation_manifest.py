@@ -64,3 +64,32 @@ def test_snapshot_manifest_rejects_changed_snapshot_or_different_run(tmp_path):
     sidecar.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="SHA-256"):
         load_and_validate_snapshot_manifest(snapshot, _verified_run())
+
+
+def test_split_snapshot_manifest_binds_every_shard(tmp_path):
+    for index, particle_id in enumerate((1, 2)):
+        path = tmp_path / f"snap_001.{index}.hdf5"
+        with h5py.File(path, "w") as handle:
+            header = handle.create_group("Header")
+            header.attrs["BoxSize"] = 10.0
+            header.attrs["Time"] = 1.0
+            header.attrs["Redshift"] = 0.0
+            header.attrs["Omega0"] = 0.3
+            header.attrs["HubbleParam"] = 0.7
+            header.attrs["MassTable"] = [0, 1, 0, 0, 0, 0]
+            header.attrs["NumFilesPerSnapshot"] = 2
+            header.attrs["NumPart_ThisFile"] = [0, 1, 0, 0, 0, 0]
+            header.attrs["NumPart_Total"] = [0, 2, 0, 0, 0, 0]
+            part = handle.create_group("PartType1")
+            part.create_dataset("Coordinates", data=[[particle_id, 1, 1]])
+            part.create_dataset("Velocities", data=[[0, 0, 0]])
+            part.create_dataset("ParticleIDs", data=[particle_id])
+    snapshot = load_gadget4_dm_snapshot(tmp_path / "snap_001.1.hdf5")
+    write_snapshot_manifest(snapshot, _verified_run())
+    manifest = load_and_validate_snapshot_manifest(snapshot, _verified_run())
+    assert manifest["schema_version"] == "haloforge-snapshot-link-v2"
+    assert len(manifest["snapshot"]["files"]) == 2
+    with h5py.File(tmp_path / "snap_001.1.hdf5", "r+") as handle:
+        handle["PartType1/Velocities"][0, 0] = 1
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_and_validate_snapshot_manifest(snapshot, _verified_run())

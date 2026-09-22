@@ -20,4 +20,4 @@ The review is ongoing. Implementation and test results are recorded in [Implemen
 5. Complete the source review, performance review, dependency audit, and clean-install release rehearsal. Retain reproducible evidence for the shipped revision.
 6. Confirm project ownership and select a repository license. Third-party font notices are already included with the report fonts.
 
-No grades or maturity ratings are assigned. Release approval requires evidence against the requirements in [OBJECTIVE.md](../OBJECTIVE.md), [REQUIREMENTS.md](../REQUIREMENTS.md), and [Release policy](RELEASE-POLICY.md).
+Release approval requires evidence against [OBJECTIVE.md](OBJECTIVE.md), [REQUIREMENTS.md](REQUIREMENTS.md), and [Release policy](RELEASE-POLICY.md).

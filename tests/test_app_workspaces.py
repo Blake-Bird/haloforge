@@ -122,6 +122,25 @@ def test_structure_maps_keep_physical_bounds_and_amplitude_ratios(saved_app):
     assert heatmaps == 3
 
 
+def test_comparison_legends_have_reserved_space_and_wrapped_entries(saved_app):
+    import json
+
+    saved_app.session_state["hf_primary_mode"] = "Compare"
+    saved_app.session_state["hf_compare_workspace"] = "Compare lab"
+    saved_app.run()
+    assert not saved_app.exception
+    legends = [
+        json.loads(item.proto.spec)["layout"]
+        for item in saved_app.get("plotly_chart")
+        if json.loads(item.proto.spec)["layout"].get("showlegend")
+    ]
+    assert legends
+    for layout in legends:
+        assert layout["legend"]["entrywidthmode"] == "fraction"
+        assert layout["legend"]["entrywidth"] <= 0.5
+        assert layout["margin"]["b"] >= 112
+
+
 def test_startup_and_comparison_exclude_tampered_saved_run(saved_app):
     runs = run_storage.load_all_runs()
     damaged = runs[-1]
@@ -263,7 +282,7 @@ def test_fresh_research_visit_opens_dashboard_instead_of_an_empty_workspace(save
 def test_command_navigation_handoff_updates_the_real_workspace_selector(
     saved_app, mode, workspace
 ):
-    """A palette action must not leave the page and its selector disagreeing."""
+    """An internal handoff must keep the page and selector in sync."""
     saved_app.session_state["hf_command_navigation"] = {
         "primary_mode": mode,
         "workspace": workspace,
@@ -289,5 +308,33 @@ def test_prepared_teaching_module_opens_its_matching_guided_experiment(saved_app
         (error.message, error.stack_trace) for error in saved_app.exception
     ]
     assert saved_app.session_state["hf_primary_mode"] == "Explore"
-    assert saved_app.selectbox(key="guided_experiment").value == "More small-scale power"
-    assert any("Teaching module ready" in message.value for message in saved_app.success)
+    assert (
+        saved_app.selectbox(key="guided_experiment").value == "More small-scale power"
+    )
+    assert any(
+        "Teaching module ready" in message.value for message in saved_app.success
+    )
+
+
+def test_student_can_prepare_saved_lab_work_export(saved_app):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    saved_app.session_state["hf_primary_mode"] = "Research"
+    saved_app.session_state["hf_research_workspace"] = "Teach"
+    saved_app.run()
+    saved_app.button(key="prepare_student_export_primordial-tilt").click().run()
+    assert not saved_app.exception, [
+        (error.message, error.stack_trace) for error in saved_app.exception
+    ]
+    prepared = saved_app.session_state["student_export_primordial-tilt"]
+    with ZipFile(BytesIO(prepared[1])) as archive:
+        assert set(archive.namelist()) == {
+            "student_handout.md",
+            "analysis_notebook.ipynb",
+            "lab_run_exports.zip",
+        }
+        with ZipFile(BytesIO(archive.read("lab_run_exports.zip"))) as run_archive:
+            assert "notebook.json" in run_archive.namelist()
+            assert "power_spectrum.csv" in run_archive.namelist()
+            assert "provenance.json" in run_archive.namelist()

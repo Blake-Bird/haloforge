@@ -61,6 +61,11 @@ def test_saves_full_catalogue_with_schema_hashes_and_provenance(tmp_path, monkey
     assert record["schema_version"] == catalogue_storage.CATALOGUE_SCHEMA_VERSION
     assert record["finder"]["mass_definition"] == "FOF b=0.2 group mass"
     assert record["files"]["catalogue.hdf5"]
-    assert pq.read_table(stored.parquet_path).num_rows == len(catalogue.halos)
+    table = pq.read_table(stored.parquet_path)
+    assert table.num_rows == len(catalogue.halos)
+    parquet_metadata = table.schema.metadata
+    assert parquet_metadata[b"haloforge.box_size_mpc_h"] == b"10000.0"
+    assert parquet_metadata[b"haloforge.redshift"] == b"0.0"
+    assert parquet_metadata[b"haloforge.position_unit"] == b"comoving h^-1 Mpc"
     with h5py.File(stored.hdf5_path) as handle:
         assert handle["Header"].attrs["schema_version"] == catalogue_storage.CATALOGUE_SCHEMA_VERSION

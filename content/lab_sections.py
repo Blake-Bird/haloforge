@@ -76,7 +76,6 @@ def local_lab_section(
         "delivery_scope": {
             "private_by_default": True,
             "student_data_collection": False,
-            "grade_export": False,
             "access_control": False,
             "note": "This is a portable local section specification. Separate instructor materials operationally; it cannot enforce hidden solutions or permissions.",
         },
@@ -112,7 +111,7 @@ def student_section_bundle(section: dict, module: LabModule) -> bytes:
             [
                 f"# {section['module']['title']} — local lab section",
                 "",
-                "This package fixes a baseline and lists the only parameters intended for the investigation. It does not create accounts, collect answers, enforce permissions, or export grades.",
+                "This package fixes a baseline and lists the parameters for the investigation. Save a run and export your data and notebook from the Teaching Lab when you finish.",
                 "",
                 f"**Estimated completion time:** {section['module']['estimated_completion_minutes']} minutes",
                 "",

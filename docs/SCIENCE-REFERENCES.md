@@ -1,5 +1,11 @@
 # Scientific implementation references
 
+## Initial-condition unit and velocity conventions
+
+CLASS matter spectra enter the IC generator as k in Mpc⁻¹ and P in Mpc³. The periodic box uses coordinates in Mpc/h, so generation converts to k_box=k_CLASS/h and P_box=h³P_CLASS before checking Fourier coverage or drawing modes. The shell check reports power in the same box units. A fixed-amplitude test at h=0.67 converts the measured shell power back to physical units and compares it against the input spectrum.
+
+The generator returns physical peculiar velocities in km/s. The GADGET-4 HDF5 writer stores u=v_pec/√a, consistent with the [official snapshot-format convention](https://wwwmpa.mpa-garching.mpg.de/gadget4/06_snapshotformat/). Nonzero velocity tests cover a=1, 1/4, and 1/50. These are unit and file-format checks; comparison with an established IC generator and validated GADGET-4 execution remain open.
+
 ## Tinker 2008 coefficient correction
 
 Reference: Tinker et al., 2008, ApJ 688, 709–728, https://arxiv.org/abs/0803.2706.
@@ -102,7 +108,7 @@ or redshift interpolation is performed.
 
 Scientific validity schema v3 records `all_evaluated_points_pass_fit_checks`. It requires a nonempty, one-dimensional Boolean mask with every entry true. Empty, scalar, numeric, string, and malformed masks do not establish evidence. Passing the implemented range checks does not certify calibration for the current cosmology or halo definition.
 
-The assurance panel treats Sheth-Tormen as containing simulation-fitted coefficients, rather than describing it as an uncalibrated analytic derivation. See [Sheth & Tormen (1999), section 3](https://arxiv.org/html/astro-ph/9901122v2) and [Sheth, Mo & Tormen (2001)](https://arxiv.org/abs/astro-ph/9907024). The underlying fit contract and its mass-definition coverage still require the review tracked in REPOSITORY-REVIEW.md.
+Sheth–Tormen is classified as semi-empirical: its ellipsoidal-collapse argument is analytic, while the coefficients are informed by simulation comparisons. HaloForge evaluates it with a real-space top-hat smoothing mass, but does not assign that mass to a specific FOF or spherical-overdensity halo catalogue. Its calibration mask remains unverified until a primary-source audit establishes a matching halo definition, cosmology, and domain. See [Sheth, Mo & Tormen (2001)](https://arxiv.org/abs/astro-ph/9907024). The source comparison describes high-resolution N-body simulations; it does not license an arbitrary halo-definition conversion.
 
 
 ## Inspection selection

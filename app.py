@@ -16,6 +16,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from ui.teaching import teach_view
+
 from config.defaults import DEFAULT_PARAMS
 from config.ranges import CONTROL_RANGES
 from engine.class_runner import (
@@ -58,7 +60,6 @@ from engine.benchmark import (
 from engine.saved_run import pipeline_from_saved_run
 from engine.performance import PERFORMANCE_BENCHMARK_VERSION, profile_core_pipeline
 from engine.figure_recipes import RECIPES, apply_figure_recipe, apply_chart_theme
-from engine.navigation import command_index, search_commands
 from engine.uncertainty import uncertainty_inventory
 from engine.experiment_design import PLANS, design_experiment
 from engine.plot_insights import (
@@ -76,25 +77,8 @@ from engine.structure import (
     gaussian_field_slice as _gaussian_field_slice,
     shared_fourier_seed as _shared_fourier_seed,
 )
-from content.modules import (
-    MODULES,
-    guided_experiment_for_module,
-    get_module,
-    instructor_guide,
-    lecture_outline,
-    lecture_slides,
-    notebook_template,
-    student_handout,
-    teaching_bundle,
-)
-from content.lab_sections import (
-    instructor_section_bundle,
-    local_lab_section,
-    student_section_bundle,
-)
 from content.concepts import CONCEPTS, concept_by_label
 from content.limitations import LIMITATIONS_VERSION, limitations_rows
-from content.skepticism import EXERCISES, get_exercise
 import state.run_storage as run_storage
 from state.campaign_storage import (
     campaign_export_bundle,
@@ -208,6 +192,19 @@ from engine.halo_catalogue import (
     render_3d_halo_view,
 )
 from engine.gadget_snapshot import load_gadget4_dm_snapshot
+from engine.gadget_catalogue import load_gadget4_group_catalogue
+from engine.gadget_run import create_run, start_run, stop_run, read_run, log_tail, list_runs, verify_completed_run
+from engine.rockstar_adapter import (
+    prepare_rockstar_hdf5_snapshot,
+    run_rockstar_single_snapshot,
+    load_rockstar_ascii_catalogue,
+)
+from engine.snapshot_visuals import density_slice_figure, particle_cube_figure
+from engine.snapshot_sequence import (
+    load_snapshot_sequence,
+    render_snapshot_movie,
+    snapshot_sequence_manifest,
+)
 from engine.simulation_manifest import (
     load_and_validate_snapshot_manifest,
     manifest_path_for_snapshot,
@@ -557,16 +554,17 @@ def chart(
                     annotation_text=str(annotation["text"]),
                     annotation_position="top left",
                 )
-    show_legend = (
-        sum(1 for trace in fig.data if getattr(trace, "showlegend", True) is not False)
-        > 1
+    legend_count = sum(
+        1 for trace in fig.data if getattr(trace, "showlegend", True) is not False
     )
-    # Keep the legend outside the data rectangle. Long immutable run names are
-    # common in comparison figures; the former small margin let them compete
-    # with the x-axis at narrow analysis widths.
-    bottom = 142 if show_legend else 62
+    show_legend = legend_count > 1
+    # Give each legend item half the available width. Plotly can then wrap long
+    # run names without laying them over the x-axis or the next figure.
+    legend_rows = (legend_count + 1) // 2 if show_legend else 0
+    bottom = max(112, 72 + 30 * legend_rows) if show_legend else 62
+    display_height = max(height, 84 + bottom + 240)
     fig.update_layout(
-        height=height,
+        height=display_height,
         margin=dict(l=70, r=28, t=84, b=bottom),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#091218",
@@ -586,12 +584,14 @@ def chart(
             bordercolor="#2b3d45",
             borderwidth=1,
             orientation="h",
-            y=-0.34,
+            y=-0.20,
             yanchor="top",
             x=0,
             xanchor="left",
             font=dict(size=9),
             tracegroupgap=4,
+            entrywidthmode="fraction",
+            entrywidth=0.48,
         ),
         showlegend=show_legend,
     )
@@ -1007,44 +1007,6 @@ def sidebar() -> str:
                     st.success("Local diagnostic history deleted.")
         apply_accessibility_preferences()
 
-        def open_command(command: dict) -> None:
-            """Apply a palette command at a widget callback boundary."""
-            run_id = command.get("run_id")
-            if run_id:
-                # Defer the session hydration to the next render, before
-                # sidebar widgets are constructed.
-                st.session_state["hf_command_load_run_id"] = str(run_id)
-            # The target is applied at the start of the next script run,
-            # before the keyed Streamlit navigation widgets exist.  Writing
-            # their keys inside this callback can leave the selector's visible
-            # value behind the rendered workspace.
-            st.session_state["hf_command_navigation"] = {
-                "primary_mode": command["primary_mode"],
-                "workspace": command.get("workspace"),
-            }
-            st.session_state["hf_command_query"] = ""
-
-        with st.expander("Go to…", expanded=False):
-            st.caption(
-                "Search runs, figures, concepts, equations, experiments, and exports. Tab to a result and press Enter to open it."
-            )
-            command_query = st.text_input(
-                "Search HaloForge",
-                key="hf_command_query",
-                placeholder="Try ‘halo mass function’ or a run name",
-            )
-            command_records = command_index(concepts=CONCEPTS, runs=load_all_runs())
-            command_results = search_commands(command_query, command_records, limit=6)
-            for command in command_results:
-                st.button(
-                    command["title"],
-                    key="hf_command_" + command["identifier"],
-                    help=command["detail"],
-                    width="stretch",
-                    on_click=open_command,
-                    args=(command,),
-                )
-                st.caption(command["detail"])
         mode = st.radio(
             "Primary mode",
             ["Explore", "Compare", "Research"],
@@ -4152,198 +4114,6 @@ def limitations_view():
     )
 
 
-def teach_view():
-    st.markdown(
-        '<div class="page-head"><span>TEACH THIS TOMORROW</span><h2>Prepared labs that teach evidence, not slider play.</h2><p>These materials are local and private by default. They do not claim classroom accounts, shared grading, or student analytics.</p></div>',
-        unsafe_allow_html=True,
-    )
-    module_map = {module.identifier: module for module in MODULES}
-    identifier = st.selectbox(
-        "Prepared module",
-        list(module_map),
-        format_func=lambda key: module_map[key].title,
-        key="teaching_module",
-    )
-    module = get_module(identifier)
-    stats = st.columns(3)
-    stats[0].metric("Estimated time", f"{module.duration_minutes} min")
-    stats[1].metric("Level", module.level)
-    stats[2].metric("Prerequisites", len(module.prerequisites))
-    st.download_button(
-        "Download teach-this-tomorrow bundle",
-        teaching_bundle(module),
-        f"{module.identifier}_teach_this_tomorrow.zip",
-        "application/zip",
-        help="Local materials only: no student accounts, analytics, grading, or shared classroom state.",
-    )
-    st.markdown("### Live question")
-    st.markdown(f"**{module.question}**")
-    target_experiment = guided_experiment_for_module(module)
-    if st.button(
-        f"Start this lab — {target_experiment}",
-        type="primary",
-        key=f"launch_teaching_module_{module.identifier}",
-        help="Open the matching prediction-led guided experiment. No calculation starts until you choose a prediction and run it.",
-    ):
-        st.session_state["teaching_experiment_request"] = target_experiment
-        st.session_state["teaching_launch_notice"] = module.title
-        st.session_state["hf_command_navigation"] = {
-            "primary_mode": "Explore",
-            "workspace": None,
-        }
-        st.rerun()
-    tabs = st.tabs(
-        [
-            "Lecture mode",
-            "Local lab section",
-            "Student lab",
-            "Instructor guide",
-            "Notebook",
-            "Scientific skepticism",
-            "Teaching boundaries",
-        ]
-    )
-    with tabs[0]:
-        slides = lecture_slides(module)
-        projector = st.toggle(
-            "Projector contrast",
-            value=True,
-            help="Uses a restrained, high-contrast large-type layout. No science values are changed.",
-            key=f"projector_{module.identifier}",
-        )
-        slide_number = st.select_slider(
-            "Lecture slide — focus this control and use Left/Right Arrow keys to move through the narrative.",
-            options=list(range(len(slides))),
-            value=0,
-            format_func=lambda index: f"{index + 1} / {len(slides)} · {slides[index].title}",
-            key=f"lecture_slide_{module.identifier}",
-        )
-        slide = slides[slide_number]
-        projector_class = " projector" if projector else ""
-        st.markdown(
-            f'<section class="lecture-slide{projector_class}"><span>{escape(slide.kicker)}</span><h2>{escape(slide.title)}</h2><p>{escape(slide.body)}</p><div><b>Ask the room</b>{escape(slide.prompt)}</div></section>',
-            unsafe_allow_html=True,
-        )
-        with st.expander("Speaker note"):
-            st.write(slide.speaker_note)
-        st.caption(
-            "Keyboard control is provided by the focused slide selector. This mode is local-only and keeps scientific caveats in the lecture arc."
-        )
-        st.download_button(
-            "Download lecture outline",
-            lecture_outline(module),
-            f"{module.identifier}_lecture_outline.md",
-            "text/markdown",
-        )
-    with tabs[1]:
-        runs = load_all_runs()
-        section_sources = {"HaloForge defaults": deepcopy(DEFAULT_PARAMS)}
-        section_sources.update({run["name"]: run["params"] for run in runs})
-        source_name = st.selectbox(
-            "Locked baseline",
-            list(section_sources),
-            key=f"section_baseline_{module.identifier}",
-        )
-        defaults_by_module = {
-            "primordial-tilt": ["n_s"],
-            "numerical-coverage": ["k_max", "k_points"],
-            "ede-structure": ["f_EDE", "log10_a_c"],
-            "rare-tail-statistics": ["A_s", "n_s"],
-            "numerical-methods": ["k_max", "k_points"],
-        }
-        permitted = st.multiselect(
-            "Parameters students may vary",
-            list(CONTROL_RANGES),
-            default=defaults_by_module.get(module.identifier, ["n_s"]),
-            key=f"section_parameters_{module.identifier}",
-        )
-        try:
-            section = local_lab_section(module, section_sources[source_name], permitted)
-        except ValueError as exc:
-            st.warning(str(exc))
-        else:
-            st.caption(
-                f"One local section · {module.duration_minutes} estimated minutes · four evidence-first prompts"
-            )
-            columns = st.columns(2)
-            columns[0].download_button(
-                "Download student lab section",
-                student_section_bundle(section, module),
-                f"{module.identifier}_student_section.zip",
-                "application/zip",
-            )
-            columns[1].download_button(
-                "Download instructor companion",
-                instructor_section_bundle(section, module),
-                f"{module.identifier}_instructor_companion.zip",
-                "application/zip",
-            )
-            st.info(
-                "Student and instructor materials are separate downloads. This is an operational separation only: HaloForge has no accounts or access control, so it cannot enforce hidden solutions, roles, response collection, analytics, or grade export."
-            )
-    with tabs[2]:
-        st.markdown(student_handout(module))
-        st.download_button(
-            "Download student handout",
-            student_handout(module),
-            f"{module.identifier}_student_handout.md",
-            "text/markdown",
-        )
-    with tabs[3]:
-        st.markdown(instructor_guide(module))
-        st.download_button(
-            "Download instructor guide",
-            instructor_guide(module),
-            f"{module.identifier}_instructor_guide.md",
-            "text/markdown",
-        )
-    with tabs[4]:
-        st.caption(
-            "Open this after exporting a run bundle; it loads the bundled Parquet tables locally."
-        )
-        st.download_button(
-            "Download Jupyter notebook template",
-            notebook_template(module),
-            f"{module.identifier}.ipynb",
-            "application/x-ipynb+json",
-        )
-    with tabs[5]:
-        st.markdown("### A smooth curve can still be wrong")
-        st.caption(
-            "These local exercises do not record answers or assign grades. The goal is to practice narrowing a claim to the evidence actually available."
-        )
-        exercise_map = {exercise.identifier: exercise for exercise in EXERCISES}
-        exercise_id = st.selectbox(
-            "Scenario",
-            list(exercise_map),
-            format_func=lambda key: key.replace("-", " ").capitalize(),
-            key="skepticism_exercise",
-        )
-        exercise = get_exercise(exercise_id)
-        st.info(exercise.setup)
-        answer = st.radio(
-            exercise.prompt,
-            list(range(len(exercise.choices))),
-            format_func=lambda index: exercise.choices[index],
-            key=f"skepticism_answer_{exercise_id}",
-        )
-        if st.button("Check reasoning", key=f"check_skepticism_{exercise_id}"):
-            if answer == exercise.unjustified_choice:
-                st.success(
-                    "Correct: that conclusion goes beyond the available evidence."
-                )
-            else:
-                st.warning(
-                    "That statement may be supported, but it is not the overclaim in this scenario."
-                )
-            st.write(exercise.explanation)
-            st.caption("Next evidence step: " + exercise.follow_up)
-    with tabs[6]:
-        st.info(
-            "HaloForge currently offers local materials, reproducible exports, accessible transcripts, and reduced motion. Classroom roles, assignments, hidden solutions, aggregate responses, analytics, and grade exports require authenticated, privacy-reviewed collaboration infrastructure and are not implemented here."
-        )
-
-
 def learn_view():
     st.markdown(
         '<div class="page-head"><span>VISUAL COURSE</span><h2>Learn the pipeline by touching it.</h2><p>One connected journey from initial fluctuations to predicted halo counts.</p></div>',
@@ -5084,6 +4854,13 @@ def evolution_studio_view():
             "Cosmic age is shown as unavailable rather than approximated; rerun to record it."
         )
     try:
+        source_omega_m = np.asarray(result.get("background_omega_m_by_z", []), dtype=float)
+        omega_m_by_frame = None
+        if source_omega_m.shape == source_redshifts.shape and np.all(np.isfinite(source_omega_m)):
+            source_log_a = np.log(1.0 / (1.0 + source_redshifts))[::-1]
+            omega_m_by_frame = np.interp(
+                np.log(1.0 / (1.0 + zs)), source_log_a, source_omega_m[::-1]
+            )
         frames = calculate_evolution_frames(
             result["k"],
             source_power[z0_source_index],
@@ -5093,6 +4870,8 @@ def evolution_studio_view():
             power_by_z=source_power,
             source_redshifts=source_redshifts,
             cosmic_time_gyr_by_z=cosmic_time_by_frame,
+            background_omega_m_by_z=omega_m_by_frame,
+            fitting=params["fitting"],
         )
     except ValueError as exc:
         st.warning(
@@ -5550,21 +5329,22 @@ def simulation_lab_view():
     st.markdown(
         '<div class="page-head"><span>SIMULATION PREPARATION LAB</span>'
         "<h2>GADGET-4 Lab</h2>"
-        "<p>Plan a collisionless box, inspect recorded snapshots, and compare matched FoF catalogues with the linear HMF. "
-        "Execution and EDE dynamics are unavailable until externally validated.</p>"
+        "<p>Run a small collisionless ΛCDM box, inspect recorded snapshots, and compare halo catalogues. "
+        "EDE dynamics remain unavailable pending independent validation.</p>"
         "</div>",
         unsafe_allow_html=True,
     )
     params = get_params()
 
-    t_doc, t_box, t_ic, t_conf, t_halo, t_hmf = st.tabs(
+    t_doc, t_box, t_ic, t_conf, t_run, t_halo, t_hmf = st.tabs(
         [
             "1 · Doctor",
             "2 · Box",
             "3 · ICs",
             "4 · Runtime",
-            "5 · Halos",
-            "6 · HMF Compare",
+            "5 · Run & Explore",
+            "6 · Halos",
+            "7 · HMF Compare",
         ]
     )
 
@@ -5822,6 +5602,9 @@ def simulation_lab_view():
             st.session_state["sim_ic_source"] = {
                 "run_id": st.session_state.get("current_run_id"),
                 "redshift": float(redshifts[source_index]),
+                "box_size_mpc_h": float(box_size),
+                "particles_per_dim": int(particles_per_dim),
+                "seed": int(seed),
                 "spectrum": "CLASS/AxiCLASS linear matter P(k)",
                 "growth_rate": growth_rate,
                 "expansion_rate_E": e_rate,
@@ -5858,7 +5641,8 @@ def simulation_lab_view():
     with t_conf:
         st.subheader("GADGET-4 Configuration Planning Files")
         config_sh = generate_config_sh(
-            is_hydro=False, enable_2lpt=False, enable_fof=True, enable_subfind=True
+            is_hydro=False, enable_2lpt=False, enable_fof=True, enable_subfind=True,
+            pm_mesh=32,
         )
         param_txt = generate_gadget4_parameter_file(
             box_size,
@@ -5897,10 +5681,197 @@ def simulation_lab_view():
                     "for an externally validated EDE GADGET-4 implementation."
                 )
             else:
-                st.info(
-                    "These are standard-background planning files only. GADGET-4 execution "
-                    "still requires the pinned image and its recorded official acceptance case."
+                st.info("The pinned local image includes GADGET-4. Use Run & Explore for the bounded 32³ ΛCDM path.")
+
+    with t_run:
+        st.subheader("Local GADGET-4 run")
+        st.caption(
+            "Start from the verified CLASS/AxiCLASS 1LPT realization above. The current "
+            "local preset is 32³ DM particles and a 32-cell PM mesh. Snapshot redshifts "
+            "are read from GADGET output and may differ slightly from requested values."
+        )
+        requested_text = st.text_input(
+            "Requested output redshifts (comma separated)",
+            value="5, 2, 0", key="sim_run_output_redshifts",
+        )
+        if st.button("Start small ΛCDM simulation", type="primary", key="sim_start_gadget"):
+            try:
+                active_id = st.session_state.get("current_run_id")
+                saved = run_storage.load_run(active_id) if active_id else None
+                if not saved or saved.get("integrity_status", {}).get("state") != "verified":
+                    raise ValueError("Load an integrity-checked saved CLASS/AxiCLASS run first")
+                source = st.session_state.get("sim_ic_source") or {}
+                report = st.session_state.get("sim_ic_report")
+                particles = st.session_state.get("sim_particles")
+                if not particles or not report or not report.checks_passed:
+                    raise ValueError("Generate and verify initial conditions first")
+                if (source.get("run_id") != active_id or
+                    source.get("particles_per_dim") != int(particles_per_dim) or
+                    source.get("box_size_mpc_h") != float(box_size) or
+                    source.get("redshift") != float(z_start) or
+                    source.get("seed") != int(seed)):
+                    raise ValueError("ICs no longer match the selected box, seed, redshift, or saved run")
+                if int(particles_per_dim) != 32:
+                    raise ValueError("Select N=32 in the Box tab for the current local run preset")
+                if saved["params"].get("enable_ede"):
+                    raise ValueError("EDE N-body execution is not validated")
+                requested = [float(value.strip()) for value in requested_text.split(",")]
+                root = create_run(
+                    positions=particles[0], velocities=particles[1], ids=particles[2],
+                    box_size_mpc_h=float(box_size), start_redshift=float(z_start),
+                    output_redshifts=requested, params=saved["params"], seed=int(seed),
+                    source_run_id=str(active_id),
+                    source_hash=str(saved["reproducibility_hash"]),
                 )
+                start_run(root)
+                st.session_state["sim_local_run_root"] = str(root)
+                st.success(f"Started run {root.name}. Refresh this panel to follow it.")
+            except (ValueError, RuntimeError, OSError, KeyError) as exc:
+                st.error(f"Run did not start: {exc}")
+        known_runs = list_runs()
+        if known_runs:
+            active_root = st.session_state.get("sim_local_run_root")
+            choices = [str(path) for path in known_runs]
+            selected_root = st.selectbox(
+                "Open a saved local run", choices,
+                index=choices.index(active_root) if active_root in choices else 0,
+                format_func=lambda value: value.rsplit("/", 1)[-1],
+                key="sim_saved_local_run",
+            )
+            st.session_state["sim_local_run_root"] = selected_root
+        run_root = st.session_state.get("sim_local_run_root")
+        if run_root:
+            try:
+                run_record = read_run(run_root)
+                st.write(f"Run `{run_record['run_id']}` · state: **{run_record['state']}**")
+                if run_record["state"] in {"queued", "running"}:
+                    if st.button("Stop run", key="sim_stop_gadget"):
+                        stop_run(run_root)
+                        st.warning("Run interrupted; its partial outputs are not marked complete.")
+                st.button("Refresh status and log", key="sim_refresh_gadget")
+                st.code(log_tail(run_root), language="text")
+                if run_record["state"] == "failed":
+                    st.error(run_record.get("error", "GADGET run failed"))
+                if run_record["state"] == "completed":
+                    run_record = verify_completed_run(run_root)
+                    frames = run_record["snapshots"]
+                    history_counts = [
+                        len(load_gadget4_group_catalogue(frame["catalogue_path"]).group_mass_msun_h)
+                        for frame in frames
+                    ]
+                    history = go.Figure(go.Scatter(
+                        x=[frame["redshift"] for frame in frames], y=history_counts,
+                        mode="markers+lines", name="GADGET FoF hosts",
+                    ))
+                    history.update_layout(
+                        title="Recorded FoF host counts across outputs",
+                        xaxis_title="Recorded redshift z", yaxis_title="FoF host count",
+                    )
+                    chart(history, 340, "sim_run_fof_history")
+                    frame_index = st.selectbox(
+                        "Recorded snapshot", range(len(frames)),
+                        format_func=lambda i: f"z={frames[i]['redshift']:.4f}",
+                        key="sim_completed_frame",
+                    )
+                    selected = frames[frame_index]
+                    recorded = load_gadget4_dm_snapshot(
+                        selected["path"], omega_m=run_record["omega_m"],
+                        h=run_record["h"],
+                    )
+                    st.session_state["sim_snapshot"] = recorded
+                    view_cols = st.columns(2)
+                    with view_cols[0]:
+                        chart(particle_cube_figure(recorded), 490, "sim_run_particle_cube")
+                    with view_cols[1]:
+                        chart(density_slice_figure(recorded), 490, "sim_run_density")
+                    native = load_gadget4_group_catalogue(selected["catalogue_path"])
+                    if not np.isclose(native.redshift, recorded.redshift, atol=1e-6):
+                        raise ValueError("FoF catalogue and snapshot have different redshifts")
+                    st.metric("GADGET FoF host groups", len(native.group_mass_msun_h))
+                    if len(native.group_mass_msun_h):
+                        masses = native.group_mass_msun_h
+                        bins = np.geomspace(masses.min() * 0.99, masses.max() * 1.01, 9)
+                        counts, edges = np.histogram(masses, bins=bins)
+                        centres = np.sqrt(edges[:-1] * edges[1:])
+                        density = counts / (recorded.box_size_mpc_h**3 * np.log(edges[1:] / edges[:-1]))
+                        figure = go.Figure(go.Scatter(
+                            x=centres, y=density, mode="markers+lines",
+                            error_y={"type": "data", "array": np.sqrt(counts) / (recorded.box_size_mpc_h**3 * np.log(edges[1:] / edges[:-1]))},
+                            name="GADGET FoF b=0.2 hosts",
+                        ))
+                        figure.update_layout(
+                            title=f"Recorded FoF abundance at z={recorded.redshift:.4f}",
+                            xaxis={"title": "FoF mass [M☉/h]", "type": "log"},
+                            yaxis={"title": "dn/dlnM [(Mpc/h)⁻³]", "type": "log"},
+                        )
+                        chart(figure, 430, "sim_run_fof_abundance")
+                    if st.button("Run Rockstar on this snapshot", key="sim_run_rockstar"):
+                        try:
+                            from pathlib import Path
+                            import uuid
+                            folder = Path(run_root) / "catalogues" / f"rockstar_{frame_index}_{uuid.uuid4().hex[:8]}"
+                            converted = prepare_rockstar_hdf5_snapshot(
+                                recorded, folder.with_name(folder.name + ".hdf5")
+                            )
+                            ascii_path = run_rockstar_single_snapshot(
+                                converted, folder, force_res_mpc_h=float(box_size) / 960.0
+                            )
+                            rock = load_rockstar_ascii_catalogue(ascii_path, expected=converted)
+                            st.session_state["sim_rockstar_catalogue"] = rock
+                            st.success(f"Rockstar wrote {rock.count} halos at z={recorded.redshift:.4f}.")
+                        except (ValueError, RuntimeError, OSError) as exc:
+                            st.error(f"Rockstar did not complete: {exc}")
+                    rock = st.session_state.get("sim_rockstar_catalogue")
+                    if rock and np.isclose(rock.scale_factor, recorded.scale_factor, atol=1e-5):
+                        st.caption(
+                            f"Rockstar: {rock.count} halos · strict SO masses: {rock.strict_so_masses} · "
+                            f"periodic mode: {rock.periodic}. FoF masses and Rockstar SO masses use different definitions."
+                        )
+                        if rock.count:
+                            points = go.Figure(go.Scatter3d(
+                                x=rock.columns["x"], y=rock.columns["y"], z=rock.columns["z"],
+                                mode="markers", marker={"size": 4, "color": rock.columns["mvir"],
+                                                        "colorscale": "Viridis", "showscale": True},
+                                text=[f"Mvir={mass:.2e} M☉/h" for mass in rock.columns["mvir"]],
+                            ))
+                            points.update_layout(
+                                title=f"Rockstar halo positions at z={recorded.redshift:.4f}",
+                                scene={"xaxis_title": "x [Mpc/h]", "yaxis_title": "y [Mpc/h]", "zaxis_title": "z [Mpc/h]"},
+                            )
+                            chart(points, 480, "sim_run_rockstar_halos_3d")
+                            so_masses = rock.columns["m200c"]
+                            so_masses = so_masses[so_masses > 0]
+                            if so_masses.size:
+                                so_bins = np.geomspace(so_masses.min() * 0.99, so_masses.max() * 1.01, 9)
+                                so_counts, so_edges = np.histogram(so_masses, bins=so_bins)
+                                so_density = so_counts / (recorded.box_size_mpc_h**3 * np.log(so_edges[1:] / so_edges[:-1]))
+                                so_figure = go.Figure(go.Scatter(
+                                    x=np.sqrt(so_edges[:-1] * so_edges[1:]), y=so_density,
+                                    mode="markers+lines", name="Rockstar M200c",
+                                ))
+                                so_figure.update_layout(
+                                    title="Rockstar SO abundance (exploratory single-worker output)",
+                                    xaxis={"title": "M200c [M☉/h]", "type": "log"},
+                                    yaxis={"title": "dn/dlnM [(Mpc/h)⁻³]", "type": "log"},
+                                )
+                                chart(so_figure, 430, "sim_run_rockstar_so_abundance")
+                    if st.button("Render structure movie", key="sim_run_movie"):
+                        sequence = load_snapshot_sequence(
+                            [frame["path"] for frame in frames],
+                            omega_m=run_record["omega_m"], h=run_record["h"],
+                        )
+                        st.session_state["sim_run_movie_bytes"] = render_snapshot_movie(
+                            sequence, video_format="mp4", width=640, height=480
+                        )
+                    movie_bytes = st.session_state.get("sim_run_movie_bytes")
+                    if movie_bytes:
+                        st.download_button(
+                            "Download structure movie", movie_bytes,
+                            file_name=f"haloforge_{run_record['run_id']}.mp4",
+                            mime="video/mp4", key="sim_run_movie_download",
+                        )
+            except (ValueError, OSError, KeyError) as exc:
+                st.error(f"Run output could not be inspected: {exc}")
 
     with t_halo:
         st.subheader("Friends-of-Friends (FOF) on an Evolved GADGET-4 Snapshot")
@@ -5943,8 +5914,29 @@ def simulation_lab_view():
         else:
             st.caption(
                 f"Snapshot source: {snapshot.source_path} · z={snapshot.redshift:g} · a={snapshot.scale_factor:.6g} · "
+                f"L={snapshot.box_size_mpc_h:g} h⁻¹ Mpc · N={snapshot.particle_ids.size:,} · "
                 f"mₚ={snapshot.particle_mass_msun_h:.3e} h⁻¹ M☉ · Ωm={snapshot.omega_m:.6g}"
             )
+            with st.expander("Recorded particle cube and density", expanded=True):
+                st.caption(
+                    "These views use the loaded snapshot's PartType1 coordinates. "
+                    "The box panel elsewhere shows initial geometry; this panel shows recorded particles."
+                )
+                density_cells = st.select_slider(
+                    "Density grid cells per side", options=[16, 32, 64, 128],
+                    value=64, key="sim_density_cells",
+                )
+                view_columns = st.columns(2)
+                with view_columns[0]:
+                    chart(
+                        particle_cube_figure(snapshot), 520,
+                        "sim_recorded_particle_cube",
+                    )
+                with view_columns[1]:
+                    chart(
+                        density_slice_figure(snapshot, cells=int(density_cells)),
+                        520, "sim_recorded_density_projection",
+                    )
             active_run_id = st.session_state.get("current_run_id")
             active_saved_run = (
                 run_storage.load_run(active_run_id) if active_run_id else None
@@ -6021,6 +6013,75 @@ def simulation_lab_view():
                         )
                     except ValueError as exc:
                         st.error(f"Catalogue was not saved: {exc}")
+
+        with st.expander("Movie from recorded snapshots", expanded=False):
+            st.caption(
+                "Enter 2–12 local HDF5 snapshot paths, one per line, from earliest to latest. "
+                "The same box, particle IDs, mass, and cosmology are required in every frame."
+            )
+            sequence_paths = st.text_area(
+                "Recorded snapshot paths", key="sim_movie_paths", height=120,
+                placeholder="/absolute/path/snap_001.hdf5\n/absolute/path/snap_002.hdf5",
+            )
+            if st.button("Validate recorded sequence", key="sim_validate_movie_sequence"):
+                try:
+                    path_list = [line.strip() for line in sequence_paths.splitlines() if line.strip()]
+                    sequence = load_snapshot_sequence(path_list)
+                    st.session_state["sim_movie_sequence"] = sequence
+                    st.session_state["sim_movie_manifest"] = snapshot_sequence_manifest(sequence)
+                    st.session_state.pop("sim_movie_bytes", None)
+                    st.success(
+                        f"Validated {len(sequence)} recorded frames in a "
+                        f"{sequence[0].box_size_mpc_h:g} h⁻¹ Mpc box."
+                    )
+                except (OSError, ValueError) as exc:
+                    st.session_state.pop("sim_movie_sequence", None)
+                    st.session_state.pop("sim_movie_manifest", None)
+                    st.session_state.pop("sim_movie_bytes", None)
+                    st.error(f"Sequence was not loaded: {exc}")
+            sequence = st.session_state.get("sim_movie_sequence")
+            if sequence:
+                frame_index = st.slider(
+                    "Recorded frame", 0, len(sequence) - 1, 0,
+                    key="sim_movie_frame",
+                    format="frame %d",
+                )
+                chart(
+                    density_slice_figure(sequence[frame_index]),
+                    500, "sim_movie_frame_chart",
+                )
+                st.caption(
+                    f"Frame {frame_index + 1}/{len(sequence)} · "
+                    f"z={sequence[frame_index].redshift:g}. Frames are the supplied snapshots; "
+                    "no intermediate dynamics are synthesized."
+                )
+                movie_format = st.selectbox(
+                    "Movie format", ["mp4", "webm", "gif"], key="sim_movie_format"
+                )
+                if st.button("Render recorded structure movie", key="sim_render_movie"):
+                    try:
+                        with st.spinner("Rendering fixed-scale particle-density frames…"):
+                            st.session_state["sim_movie_bytes"] = (
+                                movie_format,
+                                render_snapshot_movie(sequence, video_format=movie_format),
+                            )
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        st.error(f"Movie could not be rendered: {exc}")
+                movie = st.session_state.get("sim_movie_bytes")
+                if movie:
+                    st.download_button(
+                        "Download recorded structure movie", movie[1],
+                        file_name=f"haloforge_recorded_structure.{movie[0]}",
+                        mime=VIDEO_FORMATS[movie[0]], key="sim_download_movie",
+                    )
+                manifest = st.session_state.get("sim_movie_manifest")
+                if manifest:
+                    st.download_button(
+                        "Download movie source manifest",
+                        json.dumps(manifest, indent=2),
+                        file_name="haloforge_recorded_structure_manifest.json",
+                        mime="application/json", key="sim_download_movie_manifest",
+                    )
 
     with t_hmf:
         st.subheader("Finite-Bin Abundance vs. Analytic Halo Mass Function")

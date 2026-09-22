@@ -74,7 +74,7 @@ def test_teach_this_tomorrow_bundle_is_complete_and_local_only():
             "manifest.json",
         } <= names
         readme = archive.read("README.md").decode("utf-8")
-        assert "does not create a classroom" in readme
+        assert "Students run the lab themselves" in readme
         manifest = json.loads(archive.read("manifest.json"))
         handout = archive.read("student_handout.md")
         assert (

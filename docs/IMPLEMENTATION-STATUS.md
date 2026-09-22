@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated 2026-09-20. All requirements in [OBJECTIVE.md](../OBJECTIVE.md) and [REQUIREMENTS.md](../REQUIREMENTS.md) remain in scope. Work is ongoing; release approval is incomplete.
+Updated 2026-09-22. Requirements in [OBJECTIVE.md](OBJECTIVE.md) and [REQUIREMENTS.md](REQUIREMENTS.md) are tracked here. Work is ongoing; release approval is incomplete.
 
 ## Verification
 

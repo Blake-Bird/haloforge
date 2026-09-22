@@ -56,6 +56,8 @@ FIT_METADATA = {
     name: (
         "analytic"
         if c.family == "analytic"
+        else "simulation coefficients; domain unverified"
+        if c.family == "semi-empirical"
         else (
             str(c.log_inv_sigma_range)
             if c.log_inv_sigma_range

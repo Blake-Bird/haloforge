@@ -1,6 +1,7 @@
 import numpy as np
 from config.defaults import DEFAULT_PARAMS
 from engine.ic_generator import (
+    class_spectrum_in_box_units,
     export_gadget_hdf5_ic,
     generate_2lpt_particles,
     generate_gaussian_random_field,
@@ -71,6 +72,24 @@ def test_paired_fixed_field_has_correct_measured_power_normalization():
     np.testing.assert_allclose(measured_p, expected, rtol=0.03)
 
 
+def test_class_spectrum_conversion_reconstructs_physical_modes_and_power():
+    h = 0.67
+    box, n = 100.0, 24
+    k_physical = np.geomspace(1e-3, 3.0, 400)
+    p_physical = 300.0 * (k_physical / 0.1) ** -1.1
+    k_box, p_box = class_spectrum_in_box_units(k_physical, p_physical, h)
+    np.testing.assert_allclose(k_box * h, k_physical)
+    np.testing.assert_allclose(p_box / h**3, p_physical)
+    field = generate_gaussian_random_field(
+        n, box, k_box, p_box, seed=17, paired_fixed=True
+    )
+    measured_k_box, measured_p_box = measure_realized_power_spectrum(field, box, n)
+    expected_physical = np.exp(
+        np.interp(np.log(measured_k_box * h), np.log(k_physical), np.log(p_physical))
+    )
+    np.testing.assert_allclose(measured_p_box / h**3, expected_physical, rtol=0.04)
+
+
 def test_ede_generation_rejects_lcdm_growth_shortcut():
     with np.testing.assert_raises_regex(ValueError, "EDE ICs require growth"):
         generate_zeldovich_particles(
@@ -96,6 +115,24 @@ def test_gadget_ic_export_uses_the_matching_mpc_h_unit_contract(tmp_path):
     snapshot = load_gadget4_dm_snapshot(output)
     assert snapshot.box_size_mpc_h == 10.0
     np.testing.assert_allclose(snapshot.positions_mpc_h, positions)
+
+
+def test_gadget_ic_export_stores_nonzero_peculiar_velocity_over_sqrt_a(tmp_path):
+    import h5py
+
+    positions = np.zeros((16**3, 3))
+    velocities = np.tile([100.0, -25.0, 4.0], (16**3, 1))
+    ids = np.arange(1, len(positions) + 1)
+    for redshift in (0.0, 3.0, 49.0):
+        output = tmp_path / f"ics_{redshift:g}.hdf5"
+        export_gadget_hdf5_ic(
+            str(output), positions, velocities, ids, 10.0, redshift, DEFAULT_PARAMS
+        )
+        with h5py.File(output) as file:
+            stored = file["PartType1/Velocities"][:]
+        np.testing.assert_allclose(
+            stored[0] * np.sqrt(1 / (1 + redshift)), velocities[0], rtol=1e-6
+        )
 
 
 def test_ede_generation_accepts_explicit_matching_solver_growth_inputs():
